@@ -1,7 +1,7 @@
 import os
 import sqlite3
-import psycopg2
-from psycopg2 import extras
+import psycopg
+from psycopg import extras
 from flask import Flask, jsonify, request, send_from_directory, g, has_app_context
 from datetime import datetime, timedelta
 import random
@@ -45,7 +45,7 @@ IS_POSTGRES = bool(DATABASE_URL)
 
 def make_cursor(conn):
     if IS_POSTGRES:
-        cursor = conn.cursor(cursor_factory=extras.RealDictCursor)
+        cursor = conn.cursor()
         original_execute = cursor.execute
 
         def patched_execute(sql, params=None):
@@ -58,17 +58,11 @@ def make_cursor(conn):
     return conn.cursor()
 
 
-def dict_from_row(row):
-    if IS_POSTGRES:
-        return dict(row)
-    return dict(row)
-
-
 def get_db():
     if has_app_context():
         if "db" not in g:
             if IS_POSTGRES:
-                g.db = psycopg2.connect(DATABASE_URL)
+                g.db = psycopg.connect(DATABASE_URL, row_factory=extras.RealDictCursor)
             else:
                 g.db = sqlite3.connect(DB_NAME, check_same_thread=False)
                 g.db.row_factory = sqlite3.Row
@@ -78,7 +72,7 @@ def get_db():
         return g.db
     else:
         if IS_POSTGRES:
-            conn = psycopg2.connect(DATABASE_URL)
+            conn = psycopg.connect(DATABASE_URL, row_factory=extras.RealDictCursor)
         else:
             conn = sqlite3.connect(DB_NAME)
             conn.row_factory = sqlite3.Row
@@ -100,7 +94,7 @@ def get_user_org_id(user_id):
     if cache_key not in g:
         conn = get_db()
         c = make_cursor(conn)
-        c.execute(conn, "SELECT organisation_id FROM users WHERE id = ?", (user_id,))
+        c.execute("SELECT organisation_id FROM users WHERE id = ?", (user_id,))
         user = c.fetchone()
         g.setdefault(cache_key, user["organisation_id"] if user else None)
     return g.get(cache_key)
@@ -121,11 +115,11 @@ def calculate_gst(subtotal, gst_rate, is_inter_state):
 def check_inter_state(org_id, party_id):
     conn = get_db()
     c = make_cursor(conn)
-    c.execute(conn, "SELECT state FROM organisations WHERE id = ?", (org_id,))
+    c.execute("SELECT state FROM organisations WHERE id = ?", (org_id,))
     org_row = c.fetchone()
     company_state = org_row["state"] if org_row else None
 
-    c.execute(conn, "SELECT state FROM parties WHERE id = ?", (party_id,))
+    c.execute("SELECT state FROM parties WHERE id = ?", (party_id,))
     party_row = c.fetchone()
     party_state = party_row["state"] if party_row else None
 
@@ -209,7 +203,7 @@ def init_db():
     conn = get_db()
     c = make_cursor(conn)
 
-    c.execute(conn, "PRAGMA journal_mode=WAL")
+    c.execute("PRAGMA journal_mode=WAL")
 
     c.execute(
         conn,
@@ -239,7 +233,7 @@ def init_db():
     )""",
     )
 
-    c.execute(conn, "SELECT id FROM organisations LIMIT 1")
+    c.execute("SELECT id FROM organisations LIMIT 1")
     if not c.fetchone():
         c.execute(
             conn,
@@ -247,7 +241,7 @@ def init_db():
             ("My Company", "", "Maharashtra"),
         )
 
-    c.execute(conn, "SELECT id FROM organisations LIMIT 1")
+    c.execute("SELECT id FROM organisations LIMIT 1")
     first_org = c.fetchone()
     org_id = first_org[0] if first_org else 1
 
@@ -261,16 +255,14 @@ def init_db():
         ("purchase_orders", "organisation_id"),
         ("quotations", "organisation_id"),
     ]:
-        c.execute(conn, f"PRAGMA table_info({table})")
+        c.execute(f"PRAGMA table_info({table})")
         cols = [row[1] for row in c.fetchall()]
         if col not in cols:
             c.execute(
                 conn,
                 f"ALTER TABLE {table} ADD COLUMN {col} INTEGER REFERENCES organisations(id)",
             )
-            c.execute(
-                conn, f"UPDATE {table} SET {col} = ? WHERE {col} IS NULL", (org_id,)
-            )
+            c.execute(c, f"UPDATE {table} SET {col} = ? WHERE {col} IS NULL", (org_id,))
 
     c.execute(
         conn,
@@ -289,11 +281,11 @@ def init_db():
     )""",
     )
 
-    c.execute(conn, "PRAGMA table_info(parties)")
+    c.execute("PRAGMA table_info(parties)")
     columns = [row[1] for row in c.fetchall()]
     for col, default in [("city", None), ("pan", None), ("place_of_supply", None)]:
         if col not in columns:
-            c.execute(conn, f"ALTER TABLE parties ADD COLUMN {col} TEXT")
+            c.execute(f"ALTER TABLE parties ADD COLUMN {col} TEXT")
 
     c.execute(
         conn,
@@ -331,10 +323,10 @@ def init_db():
     )""",
     )
 
-    c.execute(conn, "PRAGMA table_info(invoices)")
+    c.execute("PRAGMA table_info(invoices)")
     columns = [row[1] for row in c.fetchall()]
     if "status" not in columns:
-        c.execute(conn, "ALTER TABLE invoices ADD COLUMN status TEXT DEFAULT 'pending'")
+        c.execute("ALTER TABLE invoices ADD COLUMN status TEXT DEFAULT 'pending'")
     if "is_inter_state" not in columns:
         c.execute(
             conn, "ALTER TABLE invoices ADD COLUMN is_inter_state INTEGER DEFAULT 0"
@@ -396,9 +388,9 @@ def init_db():
     )""",
     )
 
-    c.execute(conn, "INSERT OR IGNORE INTO settings (id) VALUES (1)")
+    c.execute("INSERT OR IGNORE INTO settings (id) VALUES (1)")
 
-    c.execute(conn, "PRAGMA table_info(settings)")
+    c.execute("PRAGMA table_info(settings)")
     columns = [row[1] for row in c.fetchall()]
     for col in [
         "company_pan",
@@ -411,7 +403,7 @@ def init_db():
         "footer_note",
     ]:
         if col not in columns:
-            c.execute(conn, f"ALTER TABLE settings ADD COLUMN {col} TEXT")
+            c.execute(f"ALTER TABLE settings ADD COLUMN {col} TEXT")
 
     c.execute(
         conn,
@@ -442,7 +434,7 @@ def init_db():
     )""",
     )
 
-    c.execute(conn, "SELECT id FROM users WHERE username = ?", ("admin",))
+    c.execute("SELECT id FROM users WHERE username = ?", ("admin",))
     if not c.fetchone():
         hashed_password = generate_password_hash("admin123")
         c.execute(
@@ -620,7 +612,7 @@ def init_db():
     ]
 
     for idx in indexes:
-        c.execute(conn, idx)
+        c.execute(idx)
 
     conn.commit()
     conn.close()
@@ -661,10 +653,10 @@ def dashboard():
     )
     purchases = c.fetchone()["total"] or 0
 
-    c.execute(conn, "SELECT COUNT(*) as count FROM parties")
+    c.execute("SELECT COUNT(*) as count FROM parties")
     parties = c.fetchone()["count"]
 
-    c.execute(conn, "SELECT COUNT(*) as count FROM items")
+    c.execute("SELECT COUNT(*) as count FROM items")
     items = c.fetchone()["count"]
 
     c.execute(
@@ -783,11 +775,11 @@ def get_parties():
         where_clause += " AND name LIKE ?"
         params.append(f"%{search}%")
 
-    c.execute(conn, f"SELECT COUNT(*) FROM parties {where_clause}", params)
+    c.execute(f"SELECT COUNT(*) FROM parties {where_clause}", params)
     total = c.fetchone()[0]
 
     query = f"SELECT * FROM parties {where_clause} ORDER BY name LIMIT ? OFFSET ?"
-    c.execute(conn, query, params + [limit, (page - 1) * limit])
+    c.execute(query, params + [limit, (page - 1) * limit])
     parties = [dict(row) for row in c.fetchall()]
 
     return jsonify(
@@ -960,11 +952,11 @@ def get_items():
         where_clause += " AND name LIKE ?"
         params.append(f"%{search}%")
 
-    c.execute(conn, f"SELECT COUNT(*) FROM items {where_clause}", params)
+    c.execute(f"SELECT COUNT(*) FROM items {where_clause}", params)
     total = c.fetchone()[0]
 
     query = f"SELECT * FROM items {where_clause} ORDER BY name LIMIT ? OFFSET ?"
-    c.execute(conn, query, params + [limit, (page - 1) * limit])
+    c.execute(query, params + [limit, (page - 1) * limit])
     items = [dict(row) for row in c.fetchall()]
 
     return jsonify(
@@ -1099,7 +1091,7 @@ def get_invoices():
         where_clause += " AND i.type = ?"
         params.append(inv_type)
 
-    c.execute(conn, f"SELECT COUNT(*) FROM invoices i {where_clause}", params)
+    c.execute(f"SELECT COUNT(*) FROM invoices i {where_clause}", params)
     total = c.fetchone()[0]
 
     c.execute(
@@ -1156,7 +1148,7 @@ def create_invoice():
     conn = get_db()
     c = make_cursor(conn)
 
-    c.execute(conn, "SELECT state FROM organisations WHERE id = ?", (org_id,))
+    c.execute("SELECT state FROM organisations WHERE id = ?", (org_id,))
     org = c.fetchone()
     company_state = org["state"] if org else None
 
@@ -1303,7 +1295,7 @@ def get_transactions():
     c = make_cursor(conn)
 
     c.execute(
-        conn, f"SELECT COUNT(*) FROM transactions WHERE organisation_id = ?", (org_id,)
+        c, f"SELECT COUNT(*) FROM transactions WHERE organisation_id = ?", (org_id,)
     )
     total = c.fetchone()[0]
 
@@ -1392,7 +1384,7 @@ def party_ledger(party_id):
     conn = get_db()
     c = make_cursor(conn)
 
-    c.execute(conn, "SELECT * FROM parties WHERE id = ?", (party_id,))
+    c.execute("SELECT * FROM parties WHERE id = ?", (party_id,))
     party = dict(c.fetchone())
 
     c.execute(
@@ -1919,7 +1911,7 @@ def get_settings():
     org_id = get_user_org_id(user_id)
     conn = get_db()
     c = make_cursor(conn)
-    c.execute(conn, "SELECT * FROM organisations WHERE id = ?", (org_id,))
+    c.execute("SELECT * FROM organisations WHERE id = ?", (org_id,))
     org = c.fetchone()
     if org:
         settings = dict(org)
@@ -2086,7 +2078,7 @@ def generate_po_no():
     conn = get_db()
     c = make_cursor(conn)
     today = datetime.now().strftime("%Y%m%d")
-    c.execute(conn, "SELECT COUNT(*) as count FROM purchase_orders")
+    c.execute("SELECT COUNT(*) as count FROM purchase_orders")
     count = c.fetchone()["count"] + 1
     return f"PO/{today}/{str(count).zfill(4)}"
 
@@ -2141,7 +2133,7 @@ def create_purchase_order():
     conn = get_db()
     c = make_cursor(conn)
 
-    c.execute(conn, "SELECT state FROM organisations WHERE id = ?", (org_id,))
+    c.execute("SELECT state FROM organisations WHERE id = ?", (org_id,))
     result = c.fetchone()
     company_state = result["state"] if result else None
 
@@ -2248,7 +2240,7 @@ def generate_quote_no():
     conn = get_db()
     c = make_cursor(conn)
     today = datetime.now().strftime("%Y%m%d")
-    c.execute(conn, "SELECT COUNT(*) as count FROM quotations")
+    c.execute("SELECT COUNT(*) as count FROM quotations")
     count = c.fetchone()["count"] + 1
     return f"QT/{today}/{str(count).zfill(4)}"
 
@@ -2303,7 +2295,7 @@ def create_quotation():
     conn = get_db()
     c = make_cursor(conn)
 
-    c.execute(conn, "SELECT state FROM organisations WHERE id = ?", (org_id,))
+    c.execute("SELECT state FROM organisations WHERE id = ?", (org_id,))
     result = c.fetchone()
     company_state = result["state"] if result else None
 
@@ -2458,7 +2450,7 @@ def import_backup():
             "parties",
             "items",
         ]:
-            c.execute(conn, f"DELETE FROM {table}")
+            c.execute(f"DELETE FROM {table}")
 
         if "parties" in data:
             for p in data["parties"]:
@@ -2709,12 +2701,12 @@ def seed_dummy_data():
     conn = get_db()
     c = make_cursor(conn)
 
-    c.execute(conn, "SELECT id FROM parties")
+    c.execute("SELECT id FROM parties")
     party_ids = [row[0] for row in c.fetchall()]
     if not party_ids:
         return
 
-    c.execute(conn, "SELECT id FROM items")
+    c.execute("SELECT id FROM items")
     item_ids = [row[0] for row in c.fetchall()]
     if not item_ids:
         return
@@ -2743,10 +2735,10 @@ def seed_dummy_data():
             inv_date = f"{month_str}-{day_offset:02d}"
 
             party_id = random.choice(party_ids)
-            c.execute(conn, "SELECT state FROM parties WHERE id = ?", (party_id,))
+            c.execute("SELECT state FROM parties WHERE id = ?", (party_id,))
             party_state = c.fetchone()[0]
 
-            c.execute(conn, "SELECT state FROM settings LIMIT 1")
+            c.execute("SELECT state FROM settings LIMIT 1")
             company_state_row = c.fetchone()
             company_state = company_state_row[0] if company_state_row else "Karnataka"
 
@@ -2881,7 +2873,7 @@ def login():
     org_id = user["organisation_id"]
     organisation = None
     if org_id:
-        c.execute(conn, "SELECT * FROM organisations WHERE id = ?", (org_id,))
+        c.execute("SELECT * FROM organisations WHERE id = ?", (org_id,))
         org = c.fetchone()
         if org:
             organisation = dict(org)
@@ -2929,7 +2921,7 @@ def validate_session():
         return jsonify({"valid": False, "error": "Invalid session"}), 401
 
     org_id = user["organisation_id"]
-    c.execute(conn, "SELECT * FROM organisations WHERE id = ?", (org_id,))
+    c.execute("SELECT * FROM organisations WHERE id = ?", (org_id,))
     org = c.fetchone()
 
     conn.close()
@@ -2962,7 +2954,7 @@ def get_organisations():
     c = make_cursor(conn)
 
     if user_role == "admin":
-        c.execute(conn, "SELECT * FROM organisations WHERE is_active = 1 ORDER BY name")
+        c.execute("SELECT * FROM organisations WHERE is_active = 1 ORDER BY name")
     else:
         c.execute(
             conn,
@@ -2982,7 +2974,7 @@ def get_organisation(org_id):
 
     conn = get_db()
     c = make_cursor(conn)
-    c.execute(conn, "SELECT * FROM organisations WHERE id = ?", (org_id,))
+    c.execute("SELECT * FROM organisations WHERE id = ?", (org_id,))
     org = c.fetchone()
     conn.close()
 
@@ -3035,7 +3027,7 @@ def create_organisation():
     org_id = c.lastrowid
     conn.commit()
 
-    c.execute(conn, "SELECT * FROM organisations WHERE id = ?", (org_id,))
+    c.execute("SELECT * FROM organisations WHERE id = ?", (org_id,))
     org = c.fetchone()
     conn.close()
 
@@ -3086,11 +3078,11 @@ def update_organisation(org_id):
     if fields:
         values.append(org_id)
         c.execute(
-            conn, f"UPDATE organisations SET {', '.join(fields)} WHERE id = ?", values
+            c, f"UPDATE organisations SET {', '.join(fields)} WHERE id = ?", values
         )
         conn.commit()
 
-    c.execute(conn, "SELECT * FROM organisations WHERE id = ?", (org_id,))
+    c.execute("SELECT * FROM organisations WHERE id = ?", (org_id,))
     org = c.fetchone()
     conn.close()
 
@@ -3106,7 +3098,7 @@ def switch_organisation(org_id):
     conn = get_db()
     c = make_cursor(conn)
 
-    c.execute(conn, "SELECT organisation_id FROM users WHERE id = ?", (user_id,))
+    c.execute("SELECT organisation_id FROM users WHERE id = ?", (user_id,))
     user = c.fetchone()
 
     if user["organisation_id"] != org_id:
@@ -3126,7 +3118,7 @@ def switch_organisation(org_id):
     )
     conn.commit()
 
-    c.execute(conn, "SELECT * FROM organisations WHERE id = ?", (org_id,))
+    c.execute("SELECT * FROM organisations WHERE id = ?", (org_id,))
     org = c.fetchone()
     conn.close()
 
@@ -3293,7 +3285,7 @@ def change_user_password(id):
     conn = get_db()
     c = make_cursor(conn)
 
-    c.execute(conn, "SELECT password FROM users WHERE id = ?", (id,))
+    c.execute("SELECT password FROM users WHERE id = ?", (id,))
     user = c.fetchone()
 
     if not user or user["password"] != current_password:
@@ -3302,7 +3294,7 @@ def change_user_password(id):
             {"success": False, "error": "Current password is incorrect"}
         ), 400
 
-    c.execute(conn, "UPDATE users SET password = ? WHERE id = ?", (new_password, id))
+    c.execute("UPDATE users SET password = ? WHERE id = ?", (new_password, id))
     conn.commit()
     return jsonify({"success": True})
 
@@ -3428,7 +3420,7 @@ if __name__ == "__main__":
 
         conn = get_db()
         c = make_cursor(conn)
-        c.execute(conn, "SELECT COUNT(*) FROM invoices")
+        c.execute("SELECT COUNT(*) FROM invoices")
         if c.fetchone()[0] < 50:
             seed_dummy_data()
         conn.close()
