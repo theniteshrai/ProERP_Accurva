@@ -1,7 +1,7 @@
 import os
 import sqlite3
 import psycopg
-from psycopg import extras
+from psycopg import rows
 from flask import Flask, jsonify, request, send_from_directory, g, has_app_context
 from datetime import datetime, timedelta
 import random
@@ -62,7 +62,7 @@ def get_db():
     if has_app_context():
         if "db" not in g:
             if IS_POSTGRES:
-                g.db = psycopg.connect(DATABASE_URL, row_factory=extras.RealDictCursor)
+                g.db = psycopg.connect(DATABASE_URL, row_factory=rows.dict_row)
             else:
                 g.db = sqlite3.connect(DB_NAME, check_same_thread=False)
                 g.db.row_factory = sqlite3.Row
@@ -72,7 +72,7 @@ def get_db():
         return g.db
     else:
         if IS_POSTGRES:
-            conn = psycopg.connect(DATABASE_URL, row_factory=extras.RealDictCursor)
+            conn = psycopg.connect(DATABASE_URL, row_factory=rows.dict_row)
         else:
             conn = sqlite3.connect(DB_NAME)
             conn.row_factory = sqlite3.Row
