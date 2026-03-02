@@ -44,18 +44,14 @@ IS_POSTGRES = bool(DATABASE_URL)
 
 
 def make_cursor(conn):
-    if IS_POSTGRES:
-        cursor = conn.cursor()
-        original_execute = cursor.execute
-
-        def patched_execute(sql, params=None):
-            if params:
-                sql = sql.replace("?", "%s")
-            return original_execute(sql, params)
-
-        cursor.execute = patched_execute
-        return cursor
     return conn.cursor()
+
+
+def execute_query(cursor, sql, params=None):
+    if IS_POSTGRES and params:
+        sql = sql.replace("?", "%s")
+    cursor.execute(sql, params)
+    return cursor
 
 
 def get_db():
@@ -94,7 +90,7 @@ def get_user_org_id(user_id):
     if cache_key not in g:
         conn = get_db()
         c = make_cursor(conn)
-        c.execute("SELECT organisation_id FROM users WHERE id = ?", (user_id,))
+        execute_query(c, "SELECT organisation_id FROM users WHERE id = ?", (user_id,))
         user = c.fetchone()
         g.setdefault(cache_key, user["organisation_id"] if user else None)
     return g.get(cache_key)
@@ -115,11 +111,11 @@ def calculate_gst(subtotal, gst_rate, is_inter_state):
 def check_inter_state(org_id, party_id):
     conn = get_db()
     c = make_cursor(conn)
-    c.execute("SELECT state FROM organisations WHERE id = ?", (org_id,))
+    execute_query(c, "SELECT state FROM organisations WHERE id = ?", (org_id,))
     org_row = c.fetchone()
     company_state = org_row["state"] if org_row else None
 
-    c.execute("SELECT state FROM parties WHERE id = ?", (party_id,))
+    execute_query(c, "SELECT state FROM parties WHERE id = ?", (party_id,))
     party_row = c.fetchone()
     party_state = party_row["state"] if party_row else None
 
@@ -203,9 +199,10 @@ def init_db():
     conn = get_db()
     c = make_cursor(conn)
 
-    c.execute("PRAGMA journal_mode=WAL")
+    execute_query(c, "PRAGMA journal_mode=WAL")
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """CREATE TABLE IF NOT EXISTS organisations (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -233,15 +230,16 @@ def init_db():
     )""",
     )
 
-    c.execute("SELECT id FROM organisations LIMIT 1")
+    execute_query(c, "SELECT id FROM organisations LIMIT 1")
     if not c.fetchone():
-        c.execute(
+        execute_query(
+            c,
             conn,
             """INSERT INTO organisations (name, gstin, state) VALUES (?, ?, ?)""",
             ("My Company", "", "Maharashtra"),
         )
 
-    c.execute("SELECT id FROM organisations LIMIT 1")
+    execute_query(c, "SELECT id FROM organisations LIMIT 1")
     first_org = c.fetchone()
     org_id = first_org[0] if first_org else 1
 
@@ -255,16 +253,20 @@ def init_db():
         ("purchase_orders", "organisation_id"),
         ("quotations", "organisation_id"),
     ]:
-        c.execute(f"PRAGMA table_info({table})")
+        execute_query(c, f"PRAGMA table_info({table})")
         cols = [row[1] for row in c.fetchall()]
         if col not in cols:
-            c.execute(
+            execute_query(
+                c,
                 conn,
                 f"ALTER TABLE {table} ADD COLUMN {col} INTEGER REFERENCES organisations(id)",
             )
-            c.execute(c, f"UPDATE {table} SET {col} = ? WHERE {col} IS NULL", (org_id,))
+            execute_query(
+                c, c, f"UPDATE {table} SET {col} = ? WHERE {col} IS NULL", (org_id,)
+            )
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """CREATE TABLE IF NOT EXISTS parties (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -281,13 +283,14 @@ def init_db():
     )""",
     )
 
-    c.execute("PRAGMA table_info(parties)")
+    execute_query(c, "PRAGMA table_info(parties)")
     columns = [row[1] for row in c.fetchall()]
     for col, default in [("city", None), ("pan", None), ("place_of_supply", None)]:
         if col not in columns:
-            c.execute(f"ALTER TABLE parties ADD COLUMN {col} TEXT")
+            execute_query(c, f"ALTER TABLE parties ADD COLUMN {col} TEXT")
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """CREATE TABLE IF NOT EXISTS items (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -302,7 +305,8 @@ def init_db():
     )""",
     )
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """CREATE TABLE IF NOT EXISTS invoices (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -323,16 +327,19 @@ def init_db():
     )""",
     )
 
-    c.execute("PRAGMA table_info(invoices)")
+    execute_query(c, "PRAGMA table_info(invoices)")
     columns = [row[1] for row in c.fetchall()]
     if "status" not in columns:
-        c.execute("ALTER TABLE invoices ADD COLUMN status TEXT DEFAULT 'pending'")
+        execute_query(
+            c, "ALTER TABLE invoices ADD COLUMN status TEXT DEFAULT 'pending'"
+        )
     if "is_inter_state" not in columns:
-        c.execute(
-            conn, "ALTER TABLE invoices ADD COLUMN is_inter_state INTEGER DEFAULT 0"
+        execute_query(
+            c, conn, "ALTER TABLE invoices ADD COLUMN is_inter_state INTEGER DEFAULT 0"
         )
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """CREATE TABLE IF NOT EXISTS invoice_items (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -347,7 +354,8 @@ def init_db():
     )""",
     )
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """CREATE TABLE IF NOT EXISTS transactions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -363,7 +371,8 @@ def init_db():
     )""",
     )
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """CREATE TABLE IF NOT EXISTS settings (
         id INTEGER PRIMARY KEY,
@@ -388,9 +397,9 @@ def init_db():
     )""",
     )
 
-    c.execute("INSERT OR IGNORE INTO settings (id) VALUES (1)")
+    execute_query(c, "INSERT OR IGNORE INTO settings (id) VALUES (1)")
 
-    c.execute("PRAGMA table_info(settings)")
+    execute_query(c, "PRAGMA table_info(settings)")
     columns = [row[1] for row in c.fetchall()]
     for col in [
         "company_pan",
@@ -403,9 +412,10 @@ def init_db():
         "footer_note",
     ]:
         if col not in columns:
-            c.execute(f"ALTER TABLE settings ADD COLUMN {col} TEXT")
+            execute_query(c, f"ALTER TABLE settings ADD COLUMN {col} TEXT")
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -420,7 +430,8 @@ def init_db():
     )""",
     )
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """CREATE TABLE IF NOT EXISTS module_access (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -434,10 +445,11 @@ def init_db():
     )""",
     )
 
-    c.execute("SELECT id FROM users WHERE username = ?", ("admin",))
+    execute_query(c, "SELECT id FROM users WHERE username = ?", ("admin",))
     if not c.fetchone():
         hashed_password = generate_password_hash("admin123")
-        c.execute(
+        execute_query(
+            c,
             conn,
             """INSERT INTO users (username, password, name, email, role, avatar) 
                      VALUES (?, ?, ?, ?, ?, ?)""",
@@ -466,7 +478,8 @@ def init_db():
         ]
 
         for mod in modules:
-            c.execute(
+            execute_query(
+                c,
                 conn,
                 """INSERT INTO module_access (role, module, can_view, can_add, can_edit, can_delete) 
                          VALUES (?, ?, ?, ?, ?, ?)""",
@@ -474,33 +487,38 @@ def init_db():
             )
 
         for mod in modules:
-            c.execute(
+            execute_query(
+                c,
                 conn,
                 """INSERT INTO module_access (role, module, can_view, can_add, can_edit, can_delete) 
                          VALUES (?, ?, ?, ?, ?, ?)""",
                 ("accountant", mod, 1, 1, 1, 0),
             )
 
-        c.execute(
+        execute_query(
+            c,
             conn,
             """INSERT INTO module_access (role, module, can_view, can_add, can_edit, can_delete) 
                      VALUES (?, ?, ?, ?, ?, ?)""",
             ("staff", "dashboard", 1, 0, 0, 0),
         )
-        c.execute(
+        execute_query(
+            c,
             conn,
             """INSERT INTO module_access (role, module, can_view, can_add, can_edit, can_delete) 
                      VALUES (?, ?, ?, ?, ?, ?)""",
             ("staff", "invoices", 1, 1, 0, 0),
         )
-        c.execute(
+        execute_query(
+            c,
             conn,
             """INSERT INTO module_access (role, module, can_view, can_add, can_edit, can_delete) 
                      VALUES (?, ?, ?, ?, ?, ?)""",
             ("staff", "items", 1, 0, 0, 0),
         )
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """CREATE TABLE IF NOT EXISTS expenses (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -518,7 +536,8 @@ def init_db():
     )""",
     )
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """CREATE TABLE IF NOT EXISTS purchase_orders (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -539,7 +558,8 @@ def init_db():
     )""",
     )
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """CREATE TABLE IF NOT EXISTS purchase_order_items (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -554,7 +574,8 @@ def init_db():
     )""",
     )
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """CREATE TABLE IF NOT EXISTS quotations (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -575,7 +596,8 @@ def init_db():
     )""",
     )
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """CREATE TABLE IF NOT EXISTS quotation_items (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -612,7 +634,7 @@ def init_db():
     ]
 
     for idx in indexes:
-        c.execute(idx)
+        execute_query(c, idx)
 
     conn.commit()
     conn.close()
@@ -624,8 +646,11 @@ def generate_invoice_no(invoice_type):
     c = make_cursor(conn)
     today = datetime.now().strftime("%Y%m%d")
     prefix = "SI" if invoice_type == "sale" else "PI"
-    c.execute(
-        conn, "SELECT COUNT(*) as count FROM invoices WHERE type = ?", (invoice_type,)
+    execute_query(
+        c,
+        conn,
+        "SELECT COUNT(*) as count FROM invoices WHERE type = ?",
+        (invoice_type,),
     )
     count = c.fetchone()["count"] + 1
     return f"{prefix}/{today}/{str(count).zfill(4)}"
@@ -641,31 +666,35 @@ def dashboard():
     conn = get_db()
     c = make_cursor(conn)
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT COALESCE(SUM(total), 0) as total FROM invoices WHERE type = 'sale' """,
     )
     sales = c.fetchone()["total"] or 0
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT COALESCE(SUM(total), 0) as total FROM invoices WHERE type = 'purchase' """,
     )
     purchases = c.fetchone()["total"] or 0
 
-    c.execute("SELECT COUNT(*) as count FROM parties")
+    execute_query(c, "SELECT COUNT(*) as count FROM parties")
     parties = c.fetchone()["count"]
 
-    c.execute("SELECT COUNT(*) as count FROM items")
+    execute_query(c, "SELECT COUNT(*) as count FROM items")
     items = c.fetchone()["count"]
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT COALESCE(SUM(amount), 0) as total FROM transactions WHERE type = 'receipt' """,
     )
     receipts = c.fetchone()["total"] or 0
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT COALESCE(SUM(amount), 0) as total FROM transactions WHERE type = 'payment' """,
     )
@@ -707,7 +736,8 @@ def chart_data():
     conn = get_db()
     c = make_cursor(conn)
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT strftime('%Y-%m', date) as month, 
                  SUM(CASE WHEN type = 'sale' THEN total ELSE 0 END) as sales,
@@ -719,7 +749,8 @@ def chart_data():
     )
     monthly_data = [dict(row) for row in c.fetchall()]
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT 
         COALESCE(SUM(CASE WHEN type = 'receipt' THEN amount ELSE 0 END), 0) as income,
@@ -730,7 +761,8 @@ def chart_data():
     )
     result = c.fetchone()
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT p.name, SUM(i.total) as total 
                  FROM invoices i JOIN parties p ON i.party_id = p.id 
@@ -775,11 +807,11 @@ def get_parties():
         where_clause += " AND name LIKE ?"
         params.append(f"%{search}%")
 
-    c.execute(f"SELECT COUNT(*) FROM parties {where_clause}", params)
+    execute_query(c, f"SELECT COUNT(*) FROM parties {where_clause}", params)
     total = c.fetchone()[0]
 
     query = f"SELECT * FROM parties {where_clause} ORDER BY name LIMIT ? OFFSET ?"
-    c.execute(query, params + [limit, (page - 1) * limit])
+    execute_query(c, query, params + [limit, (page - 1) * limit])
     parties = [dict(row) for row in c.fetchall()]
 
     return jsonify(
@@ -799,8 +831,11 @@ def get_party(id):
     org_id = get_user_org_id(user_id)
     conn = get_db()
     c = make_cursor(conn)
-    c.execute(
-        conn, "SELECT * FROM parties WHERE id = ? AND organisation_id = ?", (id, org_id)
+    execute_query(
+        c,
+        conn,
+        "SELECT * FROM parties WHERE id = ? AND organisation_id = ?",
+        (id, org_id),
     )
     row = c.fetchone()
     party = dict(row) if row else None
@@ -831,7 +866,8 @@ def create_party():
 
     conn = get_db()
     c = make_cursor(conn)
-    c.execute(
+    execute_query(
+        c,
         conn,
         """INSERT INTO parties (name, type, gstin, pan, phone, email, address, state, city, place_of_supply, opening_balance, organisation_id)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -874,7 +910,8 @@ def update_party(id):
 
     conn = get_db()
     c = make_cursor(conn)
-    c.execute(
+    execute_query(
+        c,
         conn,
         """UPDATE parties SET name=?, type=?, gstin=?, pan=?, phone=?, email=?, address=?, state=?, city=?, place_of_supply=?, opening_balance=?
                  WHERE id=? AND organisation_id=?""",
@@ -905,8 +942,11 @@ def delete_party(id):
     org_id = get_user_org_id(user_id)
     conn = get_db()
     c = make_cursor(conn)
-    c.execute(
-        conn, "DELETE FROM parties WHERE id = ? AND organisation_id = ?", (id, org_id)
+    execute_query(
+        c,
+        conn,
+        "DELETE FROM parties WHERE id = ? AND organisation_id = ?",
+        (id, org_id),
     )
     conn.commit()
     log_db_operation("DELETE", "parties", id)
@@ -924,7 +964,8 @@ def bulk_delete_parties():
     conn = get_db()
     c = make_cursor(conn)
     placeholders = ",".join("?" * len(ids))
-    c.execute(
+    execute_query(
+        c,
         conn,
         f"DELETE FROM parties WHERE id IN ({placeholders}) AND organisation_id = ?",
         ids + [org_id],
@@ -952,11 +993,11 @@ def get_items():
         where_clause += " AND name LIKE ?"
         params.append(f"%{search}%")
 
-    c.execute(f"SELECT COUNT(*) FROM items {where_clause}", params)
+    execute_query(c, f"SELECT COUNT(*) FROM items {where_clause}", params)
     total = c.fetchone()[0]
 
     query = f"SELECT * FROM items {where_clause} ORDER BY name LIMIT ? OFFSET ?"
-    c.execute(query, params + [limit, (page - 1) * limit])
+    execute_query(c, query, params + [limit, (page - 1) * limit])
     items = [dict(row) for row in c.fetchall()]
 
     return jsonify(
@@ -976,8 +1017,11 @@ def get_item(id):
     org_id = get_user_org_id(user_id)
     conn = get_db()
     c = make_cursor(conn)
-    c.execute(
-        conn, "SELECT * FROM items WHERE id = ? AND organisation_id = ?", (id, org_id)
+    execute_query(
+        c,
+        conn,
+        "SELECT * FROM items WHERE id = ? AND organisation_id = ?",
+        (id, org_id),
     )
     row = c.fetchone()
     item = dict(row) if row else None
@@ -991,7 +1035,8 @@ def create_item():
     data = request.json
     conn = get_db()
     c = make_cursor(conn)
-    c.execute(
+    execute_query(
+        c,
         conn,
         """INSERT INTO items (name, hsn_code, sku, unit, rate, gst_rate, opening_stock, organisation_id)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -1019,7 +1064,8 @@ def update_item(id):
     data = request.json
     conn = get_db()
     c = make_cursor(conn)
-    c.execute(
+    execute_query(
+        c,
         conn,
         """UPDATE items SET name=?, hsn_code=?, sku=?, unit=?, rate=?, gst_rate=?, opening_stock=?
                  WHERE id=? AND organisation_id=?""",
@@ -1045,8 +1091,8 @@ def delete_item(id):
     org_id = get_user_org_id(user_id)
     conn = get_db()
     c = make_cursor(conn)
-    c.execute(
-        conn, "DELETE FROM items WHERE id = ? AND organisation_id = ?", (id, org_id)
+    execute_query(
+        c, conn, "DELETE FROM items WHERE id = ? AND organisation_id = ?", (id, org_id)
     )
     conn.commit()
     return jsonify({"success": True})
@@ -1063,7 +1109,8 @@ def bulk_delete_items():
     conn = get_db()
     c = make_cursor(conn)
     placeholders = ",".join("?" * len(ids))
-    c.execute(
+    execute_query(
+        c,
         conn,
         f"DELETE FROM items WHERE id IN ({placeholders}) AND organisation_id = ?",
         ids + [org_id],
@@ -1091,10 +1138,11 @@ def get_invoices():
         where_clause += " AND i.type = ?"
         params.append(inv_type)
 
-    c.execute(f"SELECT COUNT(*) FROM invoices i {where_clause}", params)
+    execute_query(c, f"SELECT COUNT(*) FROM invoices i {where_clause}", params)
     total = c.fetchone()[0]
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         f"""SELECT i.*, p.name as party_name, p.state as party_state FROM invoices i
                  LEFT JOIN parties p ON i.party_id = p.id {where_clause} 
@@ -1120,7 +1168,8 @@ def get_invoice(id):
     org_id = get_user_org_id(user_id)
     conn = get_db()
     c = make_cursor(conn)
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT i.*, p.name as party_name, p.gstin as party_gstin, p.state as party_state
                  FROM invoices i LEFT JOIN parties p ON i.party_id = p.id WHERE i.id = ? AND i.organisation_id = ?""",
@@ -1130,7 +1179,8 @@ def get_invoice(id):
     invoice = dict(row) if row else None
 
     if invoice:
-        c.execute(
+        execute_query(
+            c,
             conn,
             """SELECT ii.*, i.name as item_name, i.hsn_code, i.unit FROM invoice_items ii
                      LEFT JOIN items i ON ii.item_id = i.id WHERE ii.invoice_id = ?""",
@@ -1148,11 +1198,12 @@ def create_invoice():
     conn = get_db()
     c = make_cursor(conn)
 
-    c.execute("SELECT state FROM organisations WHERE id = ?", (org_id,))
+    execute_query(c, "SELECT state FROM organisations WHERE id = ?", (org_id,))
     org = c.fetchone()
     company_state = org["state"] if org else None
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         "SELECT state FROM parties WHERE id = ? AND organisation_id = ?",
         (data["party_id"], org_id),
@@ -1179,7 +1230,8 @@ def create_invoice():
 
     total = subtotal + cgst + sgst + igst
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """INSERT INTO invoices (invoice_no, party_id, type, date, subtotal, cgst, sgst, igst, total, notes, is_inter_state, organisation_id)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -1229,13 +1281,17 @@ def delete_invoice(id):
     org_id = get_user_org_id(user_id)
     conn = get_db()
     c = make_cursor(conn)
-    c.execute(
+    execute_query(
+        c,
         conn,
         "DELETE FROM invoice_items WHERE invoice_id IN (SELECT id FROM invoices WHERE id = ? AND organisation_id = ?)",
         (id, org_id),
     )
-    c.execute(
-        conn, "DELETE FROM invoices WHERE id = ? AND organisation_id = ?", (id, org_id)
+    execute_query(
+        c,
+        conn,
+        "DELETE FROM invoices WHERE id = ? AND organisation_id = ?",
+        (id, org_id),
     )
     conn.commit()
     return jsonify({"success": True})
@@ -1248,7 +1304,8 @@ def update_invoice_status(id):
     data = request.json
     conn = get_db()
     c = make_cursor(conn)
-    c.execute(
+    execute_query(
+        c,
         conn,
         "UPDATE invoices SET status = ? WHERE id = ? AND organisation_id = ?",
         (data.get("status"), id, org_id),
@@ -1268,13 +1325,15 @@ def bulk_delete_invoices():
     conn = get_db()
     c = make_cursor(conn)
     placeholders = ",".join("?" * len(ids))
-    c.execute(
+    execute_query(
+        c,
         conn,
         f"""DELETE FROM invoice_items WHERE invoice_id IN 
                   (SELECT id FROM invoices WHERE id IN ({placeholders}) AND organisation_id = ?)""",
         ids + [org_id],
     )
-    c.execute(
+    execute_query(
+        c,
         conn,
         f"DELETE FROM invoices WHERE id IN ({placeholders}) AND organisation_id = ?",
         ids + [org_id],
@@ -1294,12 +1353,13 @@ def get_transactions():
     conn = get_db()
     c = make_cursor(conn)
 
-    c.execute(
-        c, f"SELECT COUNT(*) FROM transactions WHERE organisation_id = ?", (org_id,)
+    execute_query(
+        c, c, f"SELECT COUNT(*) FROM transactions WHERE organisation_id = ?", (org_id,)
     )
     total = c.fetchone()[0]
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT t.*, p.name as party_name FROM transactions t
                  LEFT JOIN parties p ON t.party_id = p.id WHERE t.organisation_id = ? 
@@ -1326,7 +1386,8 @@ def create_transaction():
     data = request.json
     conn = get_db()
     c = make_cursor(conn)
-    c.execute(
+    execute_query(
+        c,
         conn,
         """INSERT INTO transactions (date, type, party_id, amount, mode, reference_no, description, organisation_id)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -1352,7 +1413,8 @@ def delete_transaction(id):
     org_id = get_user_org_id(user_id)
     conn = get_db()
     c = make_cursor(conn)
-    c.execute(
+    execute_query(
+        c,
         conn,
         "DELETE FROM transactions WHERE id = ? AND organisation_id = ?",
         (id, org_id),
@@ -1370,7 +1432,8 @@ def bulk_delete_transactions():
     conn = get_db()
     c = make_cursor(conn)
     placeholders = ",".join("?" * len(ids))
-    c.execute(
+    execute_query(
+        c,
         conn,
         f"DELETE FROM transactions WHERE id IN ({placeholders}) AND organisation_id = ?",
         ids + [org_id],
@@ -1384,10 +1447,11 @@ def party_ledger(party_id):
     conn = get_db()
     c = make_cursor(conn)
 
-    c.execute("SELECT * FROM parties WHERE id = ?", (party_id,))
+    execute_query(c, "SELECT * FROM parties WHERE id = ?", (party_id,))
     party = dict(c.fetchone())
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT 'Invoice' as type, invoice_no as ref_no, date, total as amount
                  FROM invoices WHERE party_id = ? AND type = 'sale' """,
@@ -1395,7 +1459,8 @@ def party_ledger(party_id):
     )
     invoices = [dict(row) for row in c.fetchall()]
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT 'Receipt' as type, reference_no as ref_no, date, amount
                  FROM transactions WHERE party_id = ? AND type = 'receipt' """,
@@ -1422,7 +1487,8 @@ def gst_summary():
     conn = get_db()
     c = make_cursor(conn)
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT SUM(subtotal) as taxable, SUM(cgst) as cgst, SUM(sgst) as sgst, SUM(igst) as igst
                  FROM invoices WHERE type = 'sale' AND date BETWEEN ? AND ?""",
@@ -1430,7 +1496,8 @@ def gst_summary():
     )
     sales = dict(c.fetchone())
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT SUM(subtotal) as taxable, SUM(cgst) as cgst, SUM(sgst) as sgst, SUM(igst) as igst
                  FROM invoices WHERE type = 'purchase' AND date BETWEEN ? AND ?""",
@@ -1449,7 +1516,8 @@ def gstr1_report():
     conn = get_db()
     c = make_cursor(conn)
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT i.invoice_no, i.date, i.total, i.subtotal, i.cgst, i.sgst, i.igst, i.is_inter_state,
                  p.name as party_name, p.gstin as party_gstin, p.state as party_state
@@ -1459,7 +1527,8 @@ def gstr1_report():
     )
     invoices = [dict(row) for row in c.fetchall()]
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT DISTINCT ii.gst_rate, SUM(ii.amount) as taxable_amount, SUM(ii.amount * ii.gst_rate / 100) as tax_amount
                  FROM invoices i JOIN invoice_items ii ON i.id = ii.invoice_id
@@ -1469,7 +1538,8 @@ def gstr1_report():
     )
     tax_rates = [dict(row) for row in c.fetchall()]
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT SUM(total) as total, SUM(subtotal) as taxable FROM invoices 
                  WHERE type = 'sale' AND date BETWEEN ? AND ?""",
@@ -1499,7 +1569,8 @@ def gstr2_report():
     conn = get_db()
     c = make_cursor(conn)
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT i.invoice_no, i.date, i.total, i.subtotal, i.cgst, i.sgst, i.igst, i.is_inter_state,
                  p.name as party_name, p.gstin as party_gstin, p.state as party_state
@@ -1509,7 +1580,8 @@ def gstr2_report():
     )
     invoices = [dict(row) for row in c.fetchall()]
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT DISTINCT ii.gst_rate, SUM(ii.amount) as taxable_amount, SUM(ii.amount * ii.gst_rate / 100) as tax_amount
                  FROM invoices i JOIN invoice_items ii ON i.id = ii.invoice_id
@@ -1519,7 +1591,8 @@ def gstr2_report():
     )
     tax_rates = [dict(row) for row in c.fetchall()]
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT SUM(total) as total, SUM(subtotal) as taxable FROM invoices 
                  WHERE type = 'purchase' AND date BETWEEN ? AND ?""",
@@ -1538,7 +1611,8 @@ def day_book_report():
     conn = get_db()
     c = make_cursor(conn)
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT date, type, notes as description, total as amount, '' as mode, invoice_no as reference_no, 'Invoice' as source
                  FROM invoices WHERE date BETWEEN ? AND ?
@@ -1553,35 +1627,40 @@ def day_book_report():
     )
     entries = [dict(row) for row in c.fetchall()]
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT COALESCE(SUM(total), 0) as total FROM invoices WHERE type = 'sale' AND date BETWEEN ? AND ?""",
         (from_date, to_date),
     )
     sales = c.fetchone()[0]
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT COALESCE(SUM(total), 0) as total FROM invoices WHERE type = 'purchase' AND date BETWEEN ? AND ?""",
         (from_date, to_date),
     )
     purchases = c.fetchone()[0]
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT COALESCE(SUM(amount), 0) as total FROM transactions WHERE type = 'receipt' AND date BETWEEN ? AND ?""",
         (from_date, to_date),
     )
     receipts = c.fetchone()[0]
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT COALESCE(SUM(amount), 0) as total FROM transactions WHERE type = 'payment' AND date BETWEEN ? AND ?""",
         (from_date, to_date),
     )
     payments = c.fetchone()[0]
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT COALESCE(SUM(amount), 0) as total FROM expenses WHERE date BETWEEN ? AND ?""",
         (from_date, to_date),
@@ -1610,7 +1689,8 @@ def cash_book_report():
     conn = get_db()
     c = make_cursor(conn)
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT date, type, reference_no as ref, 
                  CASE WHEN type = 'receipt' THEN amount ELSE -amount END as amount
@@ -1625,7 +1705,8 @@ def cash_book_report():
     )
     entries = [dict(row) for row in c.fetchall()]
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT COALESCE(SUM(amount), 0) as total FROM transactions 
                  WHERE type = 'receipt' AND mode = 'cash' AND date BETWEEN ? AND ?""",
@@ -1633,7 +1714,8 @@ def cash_book_report():
     )
     cash_in = c.fetchone()[0]
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT COALESCE(SUM(amount), 0) as total FROM transactions 
                  WHERE type = 'payment' AND mode = 'cash' AND date BETWEEN ? AND ?""",
@@ -1641,7 +1723,8 @@ def cash_book_report():
     )
     cash_out_payments = c.fetchone()[0]
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT COALESCE(SUM(amount), 0) as total FROM expenses 
                  WHERE mode = 'cash' AND date BETWEEN ? AND ?""",
@@ -1668,47 +1751,54 @@ def trial_balance_report():
     conn = get_db()
     c = make_cursor(conn)
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT COALESCE(SUM(total), 0) as total FROM invoices WHERE type = 'sale' AND date BETWEEN ? AND ?""",
         (from_date, to_date),
     )
     total_sales = c.fetchone()[0]
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT COALESCE(SUM(total), 0) as total FROM invoices WHERE type = 'purchase' AND date BETWEEN ? AND ?""",
         (from_date, to_date),
     )
     total_purchases = c.fetchone()[0]
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT COALESCE(SUM(opening_balance), 0) as total FROM parties WHERE type = 'customer' """,
     )
     receivables = c.fetchone()[0]
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT COALESCE(SUM(opening_balance), 0) as total FROM parties WHERE type = 'vendor' """,
     )
     payables = c.fetchone()[0]
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT COALESCE(SUM(amount), 0) as total FROM expenses WHERE date BETWEEN ? AND ?""",
         (from_date, to_date),
     )
     total_expenses = c.fetchone()[0]
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT COALESCE(SUM(amount), 0) as total FROM transactions WHERE type = 'receipt' AND date BETWEEN ? AND ?""",
         (from_date, to_date),
     )
     total_receipts = c.fetchone()[0]
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT COALESCE(SUM(amount), 0) as total FROM transactions WHERE type = 'payment' AND date BETWEEN ? AND ?""",
         (from_date, to_date),
@@ -1737,42 +1827,48 @@ def profit_loss_report():
     conn = get_db()
     c = make_cursor(conn)
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT COALESCE(SUM(subtotal), 0) as total FROM invoices WHERE type = 'sale' AND date BETWEEN ? AND ?""",
         (from_date, to_date),
     )
     gross_sales = c.fetchone()[0]
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT COALESCE(SUM(cgst + sgst + igst), 0) as total FROM invoices WHERE type = 'sale' AND date BETWEEN ? AND ?""",
         (from_date, to_date),
     )
     sales_tax = c.fetchone()[0]
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT COALESCE(SUM(subtotal), 0) as total FROM invoices WHERE type = 'purchase' AND date BETWEEN ? AND ?""",
         (from_date, to_date),
     )
     gross_purchases = c.fetchone()[0]
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT COALESCE(SUM(cgst + sgst + igst), 0) as total FROM invoices WHERE type = 'purchase' AND date BETWEEN ? AND ?""",
         (from_date, to_date),
     )
     purchase_tax = c.fetchone()[0]
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT COALESCE(SUM(amount), 0) as total FROM expenses WHERE date BETWEEN ? AND ?""",
         (from_date, to_date),
     )
     total_expenses = c.fetchone()[0]
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT category, COALESCE(SUM(amount), 0) as total FROM expenses WHERE date BETWEEN ? AND ? GROUP BY category""",
         (from_date, to_date),
@@ -1806,7 +1902,8 @@ def sales_register_report():
     conn = get_db()
     c = make_cursor(conn)
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT i.invoice_no, i.date, p.name as party_name, p.gstin as party_gstin, p.state as party_state,
                  i.subtotal, i.cgst, i.sgst, i.igst, i.total, i.is_inter_state
@@ -1816,7 +1913,8 @@ def sales_register_report():
     )
     invoices = [dict(row) for row in c.fetchall()]
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT COUNT(*) as count, SUM(total) as total, SUM(subtotal) as taxable FROM invoices WHERE type = 'sale' AND date BETWEEN ? AND ?""",
         (from_date, to_date),
@@ -1834,7 +1932,8 @@ def purchase_register_report():
     conn = get_db()
     c = make_cursor(conn)
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT i.invoice_no, i.date, p.name as party_name, p.gstin as party_gstin, p.state as party_state,
                  i.subtotal, i.cgst, i.sgst, i.igst, i.total, i.is_inter_state
@@ -1844,7 +1943,8 @@ def purchase_register_report():
     )
     invoices = [dict(row) for row in c.fetchall()]
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT COUNT(*) as count, SUM(total) as total, SUM(subtotal) as taxable FROM invoices WHERE type = 'purchase' AND date BETWEEN ? AND ?""",
         (from_date, to_date),
@@ -1859,7 +1959,8 @@ def stock_summary_report():
     conn = get_db()
     c = make_cursor(conn)
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT i.name, i.sku, i.hsn_code, i.unit, i.rate as price, i.gst_rate, i.opening_stock,
                  COALESCE(sold.qty, 0) as sold,
@@ -1891,7 +1992,8 @@ def party_wise_sales_report():
     conn = get_db()
     c = make_cursor(conn)
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT p.name, p.gstin, p.state, COUNT(i.id) as invoice_count, 
                  SUM(i.subtotal) as taxable, SUM(i.cgst + i.sgst + i.igst) as tax, SUM(i.total) as total
@@ -1911,7 +2013,7 @@ def get_settings():
     org_id = get_user_org_id(user_id)
     conn = get_db()
     c = make_cursor(conn)
-    c.execute("SELECT * FROM organisations WHERE id = ?", (org_id,))
+    execute_query(c, "SELECT * FROM organisations WHERE id = ?", (org_id,))
     org = c.fetchone()
     if org:
         settings = dict(org)
@@ -1945,7 +2047,8 @@ def update_settings():
     data = request.json
     conn = get_db()
     c = make_cursor(conn)
-    c.execute(
+    execute_query(
+        c,
         conn,
         """UPDATE organisations SET name=?, gstin=?, pan=?, phone=?, email=?, address=?, 
                  state=?, gst_type=?, bank_name=?, bank_account=?, bank_ifsc=?, bank_branch=?, 
@@ -2001,7 +2104,8 @@ def get_expenses():
     org_id = get_user_org_id(user_id)
     conn = get_db()
     c = make_cursor(conn)
-    c.execute(
+    execute_query(
+        c,
         conn,
         "SELECT * FROM expenses WHERE organisation_id = ? ORDER BY date DESC, id DESC",
         (org_id,),
@@ -2033,7 +2137,8 @@ def create_expense():
 
     total = amount + cgst + sgst + igst
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """INSERT INTO expenses (date, category, description, amount, gst_rate, cgst, sgst, igst, mode, reference_no, organisation_id)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -2062,8 +2167,11 @@ def delete_expense(id):
     org_id = get_user_org_id(user_id)
     conn = get_db()
     c = make_cursor(conn)
-    c.execute(
-        conn, "DELETE FROM expenses WHERE id = ? AND organisation_id = ?", (id, org_id)
+    execute_query(
+        c,
+        conn,
+        "DELETE FROM expenses WHERE id = ? AND organisation_id = ?",
+        (id, org_id),
     )
     conn.commit()
     return jsonify({"success": True})
@@ -2078,7 +2186,7 @@ def generate_po_no():
     conn = get_db()
     c = make_cursor(conn)
     today = datetime.now().strftime("%Y%m%d")
-    c.execute("SELECT COUNT(*) as count FROM purchase_orders")
+    execute_query(c, "SELECT COUNT(*) as count FROM purchase_orders")
     count = c.fetchone()["count"] + 1
     return f"PO/{today}/{str(count).zfill(4)}"
 
@@ -2089,7 +2197,8 @@ def get_purchase_orders():
     org_id = get_user_org_id(user_id)
     conn = get_db()
     c = make_cursor(conn)
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT po.*, p.name as party_name FROM purchase_orders po
                  LEFT JOIN parties p ON po.party_id = p.id WHERE po.organisation_id = ? ORDER BY po.created_at DESC""",
@@ -2105,7 +2214,8 @@ def get_purchase_order(id):
     org_id = get_user_org_id(user_id)
     conn = get_db()
     c = make_cursor(conn)
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT po.*, p.name as party_name, p.gstin as party_gstin, p.state as party_state
                  FROM purchase_orders po LEFT JOIN parties p ON po.party_id = p.id WHERE po.id = ? AND po.organisation_id = ?""",
@@ -2115,7 +2225,8 @@ def get_purchase_order(id):
     order = dict(row) if row else None
 
     if order:
-        c.execute(
+        execute_query(
+            c,
             conn,
             """SELECT poi.*, i.name as item_name, i.hsn_code, i.unit FROM purchase_order_items poi
                      LEFT JOIN items i ON poi.item_id = i.id WHERE poi.po_id = ?""",
@@ -2133,11 +2244,12 @@ def create_purchase_order():
     conn = get_db()
     c = make_cursor(conn)
 
-    c.execute("SELECT state FROM organisations WHERE id = ?", (org_id,))
+    execute_query(c, "SELECT state FROM organisations WHERE id = ?", (org_id,))
     result = c.fetchone()
     company_state = result["state"] if result else None
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         "SELECT state FROM parties WHERE id = ? AND organisation_id = ?",
         (data["party_id"], org_id),
@@ -2164,7 +2276,8 @@ def create_purchase_order():
 
     total = subtotal + cgst + sgst + igst
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """INSERT INTO purchase_orders (po_no, party_id, date, delivery_date, subtotal, cgst, sgst, igst, total, notes, is_inter_state, organisation_id)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -2189,7 +2302,8 @@ def create_purchase_order():
     for item in data["items"]:
         amount = item["quantity"] * item["rate"]
         item_id = item.get("id") or item.get("item_id")
-        c.execute(
+        execute_query(
+            c,
             conn,
             """INSERT INTO purchase_order_items (po_id, item_id, quantity, rate, gst_rate, amount)
                      VALUES (?, ?, ?, ?, ?, ?)""",
@@ -2207,7 +2321,8 @@ def update_purchase_order_status(id):
     data = request.json
     conn = get_db()
     c = make_cursor(conn)
-    c.execute(
+    execute_query(
+        c,
         conn,
         "UPDATE purchase_orders SET status = ? WHERE id = ? AND organisation_id = ?",
         (data.get("status"), id, org_id),
@@ -2222,12 +2337,14 @@ def delete_purchase_order(id):
     org_id = get_user_org_id(user_id)
     conn = get_db()
     c = make_cursor(conn)
-    c.execute(
+    execute_query(
+        c,
         conn,
         "DELETE FROM purchase_order_items WHERE po_id IN (SELECT id FROM purchase_orders WHERE id = ? AND organisation_id = ?)",
         (id, org_id),
     )
-    c.execute(
+    execute_query(
+        c,
         conn,
         "DELETE FROM purchase_orders WHERE id = ? AND organisation_id = ?",
         (id, org_id),
@@ -2240,7 +2357,7 @@ def generate_quote_no():
     conn = get_db()
     c = make_cursor(conn)
     today = datetime.now().strftime("%Y%m%d")
-    c.execute("SELECT COUNT(*) as count FROM quotations")
+    execute_query(c, "SELECT COUNT(*) as count FROM quotations")
     count = c.fetchone()["count"] + 1
     return f"QT/{today}/{str(count).zfill(4)}"
 
@@ -2251,7 +2368,8 @@ def get_quotations():
     org_id = get_user_org_id(user_id)
     conn = get_db()
     c = make_cursor(conn)
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT q.*, p.name as party_name FROM quotations q
                  LEFT JOIN parties p ON q.party_id = p.id WHERE q.organisation_id = ? ORDER BY q.created_at DESC""",
@@ -2267,7 +2385,8 @@ def get_quotation(id):
     org_id = get_user_org_id(user_id)
     conn = get_db()
     c = make_cursor(conn)
-    c.execute(
+    execute_query(
+        c,
         conn,
         """SELECT q.*, p.name as party_name, p.gstin as party_gstin, p.state as party_state
                  FROM quotations q LEFT JOIN parties p ON q.party_id = p.id WHERE q.id = ? AND q.organisation_id = ?""",
@@ -2277,7 +2396,8 @@ def get_quotation(id):
     quote = dict(row) if row else None
 
     if quote:
-        c.execute(
+        execute_query(
+            c,
             conn,
             """SELECT qi.*, i.name as item_name, i.hsn_code, i.unit FROM quotation_items qi
                      LEFT JOIN items i ON qi.item_id = i.id WHERE qi.quote_id = ?""",
@@ -2295,11 +2415,12 @@ def create_quotation():
     conn = get_db()
     c = make_cursor(conn)
 
-    c.execute("SELECT state FROM organisations WHERE id = ?", (org_id,))
+    execute_query(c, "SELECT state FROM organisations WHERE id = ?", (org_id,))
     result = c.fetchone()
     company_state = result["state"] if result else None
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         "SELECT state FROM parties WHERE id = ? AND organisation_id = ?",
         (data["party_id"], org_id),
@@ -2326,7 +2447,8 @@ def create_quotation():
 
     total = subtotal + cgst + sgst + igst
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """INSERT INTO quotations (quote_no, party_id, date, valid_until, subtotal, cgst, sgst, igst, total, notes, is_inter_state, organisation_id)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -2351,7 +2473,8 @@ def create_quotation():
     for item in data["items"]:
         amount = item["quantity"] * item["rate"]
         item_id = item.get("id") or item.get("item_id")
-        c.execute(
+        execute_query(
+            c,
             conn,
             """INSERT INTO quotation_items (quote_id, item_id, quantity, rate, gst_rate, amount)
                      VALUES (?, ?, ?, ?, ?, ?)""",
@@ -2376,7 +2499,8 @@ def update_quotation_status(id):
     data = request.json
     conn = get_db()
     c = make_cursor(conn)
-    c.execute(
+    execute_query(
+        c,
         conn,
         "UPDATE quotations SET status = ? WHERE id = ? AND organisation_id = ?",
         (data.get("status"), id, org_id),
@@ -2391,12 +2515,14 @@ def delete_quotation(id):
     org_id = get_user_org_id(user_id)
     conn = get_db()
     c = make_cursor(conn)
-    c.execute(
+    execute_query(
+        c,
         conn,
         "DELETE FROM quotation_items WHERE quote_id IN (SELECT id FROM quotations WHERE id = ? AND organisation_id = ?)",
         (id, org_id),
     )
-    c.execute(
+    execute_query(
+        c,
         conn,
         "DELETE FROM quotations WHERE id = ? AND organisation_id = ?",
         (id, org_id),
@@ -2414,7 +2540,8 @@ def import_backup():
     try:
         if "settings" in data:
             s = data["settings"]
-            c.execute(
+            execute_query(
+                c,
                 conn,
                 """UPDATE settings SET company_name=?, company_gstin=?, company_pan=?, company_address=?, 
                          company_phone=?, company_email=?, state=?, gst_type=?, bank_name=?, bank_account=?, 
@@ -2450,11 +2577,12 @@ def import_backup():
             "parties",
             "items",
         ]:
-            c.execute(f"DELETE FROM {table}")
+            execute_query(c, f"DELETE FROM {table}")
 
         if "parties" in data:
             for p in data["parties"]:
-                c.execute(
+                execute_query(
+                    c,
                     conn,
                     """INSERT INTO parties (id, name, type, gstin, pan, phone, email, address, state, city, place_of_supply, opening_balance, created_at)
                              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -2477,7 +2605,8 @@ def import_backup():
 
         if "items" in data:
             for i in data["items"]:
-                c.execute(
+                execute_query(
+                    c,
                     conn,
                     """INSERT INTO items (id, name, hsn_code, sku, unit, rate, gst_rate, opening_stock, created_at)
                              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -2496,7 +2625,8 @@ def import_backup():
 
         if "invoices" in data:
             for inv in data["invoices"]:
-                c.execute(
+                execute_query(
+                    c,
                     conn,
                     """INSERT INTO invoices (id, invoice_no, party_id, type, date, subtotal, cgst, sgst, igst, total, notes, is_inter_state, created_at)
                              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -2519,7 +2649,8 @@ def import_backup():
 
         if "invoice_items" in data:
             for ii in data["invoice_items"]:
-                c.execute(
+                execute_query(
+                    c,
                     conn,
                     """INSERT INTO invoice_items (id, invoice_id, item_id, quantity, rate, gst_rate, amount)
                              VALUES (?, ?, ?, ?, ?, ?, ?)""",
@@ -2536,7 +2667,8 @@ def import_backup():
 
         if "transactions" in data:
             for t in data["transactions"]:
-                c.execute(
+                execute_query(
+                    c,
                     conn,
                     """INSERT INTO transactions (id, date, type, party_id, amount, mode, reference_no, description, created_at)
                              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -2555,7 +2687,8 @@ def import_backup():
 
         if "expenses" in data:
             for e in data["expenses"]:
-                c.execute(
+                execute_query(
+                    c,
                     conn,
                     """INSERT INTO expenses (id, date, category, description, amount, gst_rate, cgst, sgst, igst, mode, reference_no, created_at)
                              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -2577,7 +2710,8 @@ def import_backup():
 
         if "purchase_orders" in data:
             for po in data["purchase_orders"]:
-                c.execute(
+                execute_query(
+                    c,
                     conn,
                     """INSERT INTO purchase_orders (id, po_no, party_id, date, delivery_date, subtotal, cgst, sgst, igst, total, notes, status, is_inter_state, created_at)
                              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -2601,7 +2735,8 @@ def import_backup():
 
         if "purchase_order_items" in data:
             for poi in data["purchase_order_items"]:
-                c.execute(
+                execute_query(
+                    c,
                     conn,
                     """INSERT INTO purchase_order_items (id, po_id, item_id, quantity, rate, gst_rate, amount)
                              VALUES (?, ?, ?, ?, ?, ?, ?)""",
@@ -2618,7 +2753,8 @@ def import_backup():
 
         if "quotations" in data:
             for q in data["quotations"]:
-                c.execute(
+                execute_query(
+                    c,
                     conn,
                     """INSERT INTO quotations (id, quote_no, party_id, date, valid_until, subtotal, cgst, sgst, igst, total, notes, status, is_inter_state, created_at)
                              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -2642,7 +2778,8 @@ def import_backup():
 
         if "quotation_items" in data:
             for qi in data["quotation_items"]:
-                c.execute(
+                execute_query(
+                    c,
                     conn,
                     """INSERT INTO quotation_items (id, quote_id, item_id, quantity, rate, gst_rate, amount)
                              VALUES (?, ?, ?, ?, ?, ?, ?)""",
@@ -2701,23 +2838,25 @@ def seed_dummy_data():
     conn = get_db()
     c = make_cursor(conn)
 
-    c.execute("SELECT id FROM parties")
+    execute_query(c, "SELECT id FROM parties")
     party_ids = [row[0] for row in c.fetchall()]
     if not party_ids:
         return
 
-    c.execute("SELECT id FROM items")
+    execute_query(c, "SELECT id FROM items")
     item_ids = [row[0] for row in c.fetchall()]
     if not item_ids:
         return
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         "SELECT MAX(CAST(SUBSTR(invoice_no, 4) AS INTEGER)) FROM invoices WHERE invoice_no LIKE 'INV-%'",
     )
     inv_num = (c.fetchone()[0] or 10000) + 1
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         "SELECT MAX(CAST(SUBSTR(invoice_no, 4) AS INTEGER)) FROM invoices WHERE invoice_no LIKE 'PINV-%'",
     )
@@ -2735,10 +2874,10 @@ def seed_dummy_data():
             inv_date = f"{month_str}-{day_offset:02d}"
 
             party_id = random.choice(party_ids)
-            c.execute("SELECT state FROM parties WHERE id = ?", (party_id,))
+            execute_query(c, "SELECT state FROM parties WHERE id = ?", (party_id,))
             party_state = c.fetchone()[0]
 
-            c.execute("SELECT state FROM settings LIMIT 1")
+            execute_query(c, "SELECT state FROM settings LIMIT 1")
             company_state_row = c.fetchone()
             company_state = company_state_row[0] if company_state_row else "Karnataka"
 
@@ -2749,8 +2888,8 @@ def seed_dummy_data():
 
             for _ in range(num_items):
                 item_id = random.choice(item_ids)
-                c.execute(
-                    conn, "SELECT rate, gst_rate FROM items WHERE id = ?", (item_id,)
+                execute_query(
+                    c, conn, "SELECT rate, gst_rate FROM items WHERE id = ?", (item_id,)
                 )
                 row = c.fetchone()
                 rate = row[0] if row else 100
@@ -2759,7 +2898,8 @@ def seed_dummy_data():
                 amount = rate * qty
                 subtotal += amount
 
-                c.execute(
+                execute_query(
+                    c,
                     conn,
                     """INSERT INTO invoice_items (invoice_id, item_id, quantity, rate, gst_rate, amount) 
                              VALUES (?, ?, ?, ?, ?, ?)""",
@@ -2777,7 +2917,8 @@ def seed_dummy_data():
             inv_type = random.choice(["sale", "purchase"])
             inv_no = f"INV-{inv_num}" if inv_type == "sale" else f"PINV-{pinv_num}"
 
-            c.execute(
+            execute_query(
+                c,
                 conn,
                 """INSERT INTO invoices (invoice_no, party_id, type, date, subtotal, cgst, sgst, igst, total, is_inter_state)
                          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -2801,7 +2942,8 @@ def seed_dummy_data():
                 pinv_num += 1
 
             amount = random.randint(5000, 50000)
-            c.execute(
+            execute_query(
+                c,
                 conn,
                 """INSERT INTO transactions (date, type, party_id, amount, mode, reference_no, description)
                          VALUES (?, 'receipt', ?, ?, 'cash', ?, '')""",
@@ -2812,7 +2954,8 @@ def seed_dummy_data():
             category = random.choice(
                 ["Rent", "Salary", "Utilities", "Transport", "Office"]
             )
-            c.execute(
+            execute_query(
+                c,
                 conn,
                 """INSERT INTO expenses (date, category, amount, description) 
                          VALUES (?, ?, ?, '')""",
@@ -2844,7 +2987,8 @@ def login():
 
     conn = get_db()
     c = make_cursor(conn)
-    c.execute(
+    execute_query(
+        c,
         conn,
         "SELECT id, username, password, name, email, role, avatar, is_active, organisation_id FROM users WHERE username = ?",
         (username,),
@@ -2862,8 +3006,8 @@ def login():
         if stored_password != password:
             return jsonify({"success": False, "error": "Invalid credentials"}), 401
         hashed = generate_password_hash(password)
-        c.execute(
-            conn, "UPDATE users SET password = ? WHERE id = ?", (hashed, user["id"])
+        execute_query(
+            c, conn, "UPDATE users SET password = ? WHERE id = ?", (hashed, user["id"])
         )
         conn.commit()
 
@@ -2873,7 +3017,7 @@ def login():
     org_id = user["organisation_id"]
     organisation = None
     if org_id:
-        c.execute("SELECT * FROM organisations WHERE id = ?", (org_id,))
+        execute_query(c, "SELECT * FROM organisations WHERE id = ?", (org_id,))
         org = c.fetchone()
         if org:
             organisation = dict(org)
@@ -2909,7 +3053,8 @@ def validate_session():
 
     conn = get_db()
     c = make_cursor(conn)
-    c.execute(
+    execute_query(
+        c,
         conn,
         "SELECT id, username, name, email, role, avatar, organisation_id, is_active FROM users WHERE id = ?",
         (user_id,),
@@ -2921,7 +3066,7 @@ def validate_session():
         return jsonify({"valid": False, "error": "Invalid session"}), 401
 
     org_id = user["organisation_id"]
-    c.execute("SELECT * FROM organisations WHERE id = ?", (org_id,))
+    execute_query(c, "SELECT * FROM organisations WHERE id = ?", (org_id,))
     org = c.fetchone()
 
     conn.close()
@@ -2954,9 +3099,12 @@ def get_organisations():
     c = make_cursor(conn)
 
     if user_role == "admin":
-        c.execute("SELECT * FROM organisations WHERE is_active = 1 ORDER BY name")
+        execute_query(
+            c, "SELECT * FROM organisations WHERE is_active = 1 ORDER BY name"
+        )
     else:
-        c.execute(
+        execute_query(
+            c,
             conn,
             "SELECT o.* FROM organisations o JOIN users u ON u.organisation_id = o.id WHERE u.id = ? AND o.is_active = 1",
             (user_id,),
@@ -2974,7 +3122,7 @@ def get_organisation(org_id):
 
     conn = get_db()
     c = make_cursor(conn)
-    c.execute("SELECT * FROM organisations WHERE id = ?", (org_id,))
+    execute_query(c, "SELECT * FROM organisations WHERE id = ?", (org_id,))
     org = c.fetchone()
     conn.close()
 
@@ -2997,7 +3145,8 @@ def create_organisation():
     conn = get_db()
     c = make_cursor(conn)
 
-    c.execute(
+    execute_query(
+        c,
         conn,
         """INSERT INTO organisations (name, gstin, pan, phone, email, address, state, city, gst_type, bank_name, bank_account, bank_ifsc, bank_branch, default_gst_rate, payment_terms, footer_note, invoice_template, quotation_template, po_template)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -3027,7 +3176,7 @@ def create_organisation():
     org_id = c.lastrowid
     conn.commit()
 
-    c.execute("SELECT * FROM organisations WHERE id = ?", (org_id,))
+    execute_query(c, "SELECT * FROM organisations WHERE id = ?", (org_id,))
     org = c.fetchone()
     conn.close()
 
@@ -3077,12 +3226,12 @@ def update_organisation(org_id):
 
     if fields:
         values.append(org_id)
-        c.execute(
-            c, f"UPDATE organisations SET {', '.join(fields)} WHERE id = ?", values
+        execute_query(
+            c, c, f"UPDATE organisations SET {', '.join(fields)} WHERE id = ?", values
         )
         conn.commit()
 
-    c.execute("SELECT * FROM organisations WHERE id = ?", (org_id,))
+    execute_query(c, "SELECT * FROM organisations WHERE id = ?", (org_id,))
     org = c.fetchone()
     conn.close()
 
@@ -3098,11 +3247,12 @@ def switch_organisation(org_id):
     conn = get_db()
     c = make_cursor(conn)
 
-    c.execute("SELECT organisation_id FROM users WHERE id = ?", (user_id,))
+    execute_query(c, "SELECT organisation_id FROM users WHERE id = ?", (user_id,))
     user = c.fetchone()
 
     if user["organisation_id"] != org_id:
-        c.execute(
+        execute_query(
+            c,
             conn,
             "SELECT id FROM organisations WHERE id = ? AND is_active = 1",
             (org_id,),
@@ -3113,12 +3263,12 @@ def switch_organisation(org_id):
                 {"success": False, "error": "Organisation not found or access denied"}
             ), 403
 
-    c.execute(
-        conn, "UPDATE users SET organisation_id = ? WHERE id = ?", (org_id, user_id)
+    execute_query(
+        c, conn, "UPDATE users SET organisation_id = ? WHERE id = ?", (org_id, user_id)
     )
     conn.commit()
 
-    c.execute("SELECT * FROM organisations WHERE id = ?", (org_id,))
+    execute_query(c, "SELECT * FROM organisations WHERE id = ?", (org_id,))
     org = c.fetchone()
     conn.close()
 
@@ -3133,7 +3283,8 @@ def get_current_user():
 
     conn = get_db()
     c = make_cursor(conn)
-    c.execute(
+    execute_query(
+        c,
         conn,
         "SELECT id, username, name, email, role, avatar FROM users WHERE id = ?",
         (user_id,),
@@ -3166,7 +3317,8 @@ def get_users():
     org_id = get_user_org_id(user_id)
     conn = get_db()
     c = make_cursor(conn)
-    c.execute(
+    execute_query(
+        c,
         conn,
         "SELECT id, username, name, email, role, avatar, is_active, created_at FROM users WHERE organisation_id = ?",
         (org_id,),
@@ -3188,7 +3340,8 @@ def create_user():
     c = make_cursor(conn)
 
     try:
-        c.execute(
+        execute_query(
+            c,
             conn,
             """INSERT INTO users (username, password, name, email, role, avatar, organisation_id) 
                      VALUES (?, ?, ?, ?, ?, ?, ?)""",
@@ -3226,7 +3379,8 @@ def update_user(id):
 
     if int(user_id) == id and user_role != "admin":
         if data.get("avatar"):
-            c.execute(
+            execute_query(
+                c,
                 conn,
                 "UPDATE users SET avatar = ? WHERE id = ? AND organisation_id = ?",
                 (data.get("avatar"), id, org_id),
@@ -3236,7 +3390,8 @@ def update_user(id):
             return jsonify({"success": True})
 
     if data.get("password"):
-        c.execute(
+        execute_query(
+            c,
             conn,
             """UPDATE users SET name=?, email=?, role=?, avatar=?, is_active=?, password=? WHERE id=? AND organisation_id=?""",
             (
@@ -3251,7 +3406,8 @@ def update_user(id):
             ),
         )
     else:
-        c.execute(
+        execute_query(
+            c,
             conn,
             """UPDATE users SET name=?, email=?, role=?, avatar=?, is_active=? WHERE id=? AND organisation_id=?""",
             (
@@ -3285,7 +3441,7 @@ def change_user_password(id):
     conn = get_db()
     c = make_cursor(conn)
 
-    c.execute("SELECT password FROM users WHERE id = ?", (id,))
+    execute_query(c, "SELECT password FROM users WHERE id = ?", (id,))
     user = c.fetchone()
 
     if not user or user["password"] != current_password:
@@ -3294,7 +3450,7 @@ def change_user_password(id):
             {"success": False, "error": "Current password is incorrect"}
         ), 400
 
-    c.execute("UPDATE users SET password = ? WHERE id = ?", (new_password, id))
+    execute_query(c, "UPDATE users SET password = ? WHERE id = ?", (new_password, id))
     conn.commit()
     return jsonify({"success": True})
 
@@ -3312,8 +3468,8 @@ def delete_user(id):
 
     conn = get_db()
     c = make_cursor(conn)
-    c.execute(
-        conn, "DELETE FROM users WHERE id = ? AND organisation_id = ?", (id, org_id)
+    execute_query(
+        c, conn, "DELETE FROM users WHERE id = ? AND organisation_id = ?", (id, org_id)
     )
     conn.commit()
     return jsonify({"success": True})
@@ -3327,7 +3483,8 @@ def get_module_access():
 
     conn = get_db()
     c = make_cursor(conn)
-    c.execute(
+    execute_query(
+        c,
         conn,
         "SELECT module, can_view, can_add, can_edit, can_delete FROM module_access WHERE role = ?",
         (user_role,),
@@ -3356,7 +3513,8 @@ def update_module_access():
     c = make_cursor(conn)
 
     for module, perms in data.items():
-        c.execute(
+        execute_query(
+            c,
             conn,
             """INSERT OR REPLACE INTO module_access (role, module, can_view, can_add, can_edit, can_delete) 
                      VALUES (?, ?, ?, ?, ?, ?)""",
@@ -3382,7 +3540,8 @@ def get_role_access(role):
 
     conn = get_db()
     c = make_cursor(conn)
-    c.execute(
+    execute_query(
+        c,
         conn,
         "SELECT module, can_view, can_add, can_edit, can_delete FROM module_access WHERE role = ?",
         (role,),
@@ -3420,7 +3579,7 @@ if __name__ == "__main__":
 
         conn = get_db()
         c = make_cursor(conn)
-        c.execute("SELECT COUNT(*) FROM invoices")
+        execute_query(c, "SELECT COUNT(*) FROM invoices")
         if c.fetchone()[0] < 50:
             seed_dummy_data()
         conn.close()
