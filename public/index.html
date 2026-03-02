@@ -34,20 +34,24 @@
     aside { 
       width: 220px; 
       background: var(--sidebar-bg); 
-      border-left: 1px solid var(--border);
-      border-right: none;
+      border-right: 1px solid var(--border);
       padding: 0; 
       display: flex; 
       flex-direction: column;
       flex-shrink: 0;
       transition: width 0.2s ease;
-      order: 2;
     }
     aside.minimized {
       width: 52px;
     }
     aside.minimized h2 {
       display: none;
+    }
+    aside.minimized .sidebar-minimized-logo {
+      display: flex !important;
+      padding: 0.5rem;
+      border-bottom: 1px solid var(--border);
+      background: white;
     }
     aside.minimized nav {
       padding: 0.25rem;
@@ -88,14 +92,15 @@
     aside nav button { 
       background: transparent; 
       border: none; 
-      text-align: left; 
+      text-align: right; 
       padding: 0.6rem 0.75rem; 
       cursor: pointer; 
       color: var(--text); 
-      font-size: 0.85rem; 
-      border-radius: 6px;
+      font-size: 0.85 border-radius: rem; 
+     6px;
       display: flex; 
       align-items: center; 
+      justify-content: flex-end;
       gap: 0.6rem;
       transition: all 0.15s;
       font-weight: 500;
@@ -111,7 +116,7 @@
     .sidebar-toggle {
       background: transparent;
       border: none;
-      text-align: left;
+      text-align: right;
       padding: 0.6rem 0.75rem;
       cursor: pointer;
       color: var(--text);
@@ -119,6 +124,7 @@
       border-radius: 6px;
       display: flex;
       align-items: center;
+      justify-content: flex-end;
       gap: 0.6rem;
       transition: all 0.15s;
       font-weight: 500;
@@ -130,7 +136,7 @@
     }
     .sidebar-toggle svg { width: 16px; height: 16px; flex-shrink: 0; }
     
-    main { flex: 1 1 auto; padding: 1.5rem; background: var(--main-bg); order: 1; }
+    main { flex: 1 1 auto; padding: 1.5rem; background: var(--main-bg); }
     .page { display: none; width: 100%; }
     .page.active { display: block; }
     
@@ -419,8 +425,8 @@
     .mobile-header { display: none; }
     
     @media (max-width: 768px) {
-      aside { position: fixed; right: -240px; left: auto; z-index: 50; transition: right 0.3s; height: 100vh; }
-      aside.open { right: 0; }
+      aside { position: fixed; left: -240px; z-index: 50; transition: left 0.3s; height: 100vh; }
+      aside.open { left: 0; }
       .mobile-header { display: flex; padding: 0.75rem; }
       .menu-btn { background: var(--text); color: white; border: none; padding: 0.4rem 0.75rem; border-radius: 6px; cursor: pointer; font-size: 1rem; }
       
@@ -820,9 +826,9 @@
   <div class="app-layout" id="main-app" style="display: none;">
     <aside id="sidebar">
       <h2><img src="/logo/Accurva_small.png" alt="ACCURVA" style="height:28px;"></h2>
+      <div class="sidebar-minimized-logo" style="display:none;padding:0.5rem;justify-content:center;"><img src="/logo/accurva_icon_120x.png" alt="A" style="width:28px;height:28px;"></div>
       <button class="sidebar-toggle" onclick="toggleSidebar()" title="Toggle Sidebar">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
-        <span>Minimize</span>
       </button>
       <nav>
         <button class="active" data-page="dashboard">
@@ -3218,11 +3224,15 @@
 
     async function loadParties() {
       if (!currentUser) return;
+      const params = { page: pagination.parties.page, limit: 50 };
       const res = await fetch(API + '/api/parties?' + new URLSearchParams(params), {
           headers: { 'X-User-Id': currentUser.id, 'X-User-Role': currentUser.role }
         });
-      parties = await res.json();
-      let filtered = parties;
+      const response = await res.json();
+      parties = response.data || [];
+      pagination.parties.total = response.total || 0;
+      
+      let filtered = [...parties];
       
       if (partyFilters.search) {
         filtered = filtered.filter(p => p.name.toLowerCase().includes(partyFilters.search.toLowerCase()));
@@ -3234,7 +3244,6 @@
         filtered = filtered.filter(p => p.state === partyFilters.state);
       }
       
-      pagination.parties.total = filtered.length;
       const paged = paginate(filtered, pagination.parties.page);
       const cols = getColumnConfig('parties');
       
@@ -3426,20 +3435,22 @@
 
     async function loadItems() {
       if (!currentUser) return;
+      const params = { page: pagination.items.page, limit: 50 };
       const res = await fetch(API + '/api/items?' + new URLSearchParams(params), {
           headers: { 'X-User-Id': currentUser.id, 'X-User-Role': currentUser.role }
         });
-      items = await res.json();
+      const response = await res.json();
+      items = response.data || [];
+      pagination.items.total = response.total || 0;
       
-      let filtered = items;
+      let filtered = [...items];
       if (itemFilters.search) {
         filtered = filtered.filter(i => i.name.toLowerCase().includes(itemFilters.search.toLowerCase()));
       }
       if (itemFilters.gst) {
         filtered = filtered.filter(i => i.gst_rate == itemFilters.gst);
       }
-      
-      pagination.items.total = filtered.length;
+       
       const paged = paginate(filtered, pagination.items.page);
       
       document.getElementById('items-list').innerHTML = paged.map(i => `
@@ -3598,13 +3609,17 @@
 
     async function loadInvoices() {
       if (!currentUser) return;
+      const params = { page: pagination.invoices.page, limit: 50 };
       const headers = { 'X-User-Id': currentUser.id, 'X-User-Role': currentUser.role };
       const [invoicesRes, partiesRes] = await Promise.all([
-        fetch(API + '/api/invoices', { headers }),
-        fetch(API + '/api/parties', { headers })
+        fetch(API + '/api/invoices?' + new URLSearchParams(params), { headers }),
+        fetch(API + '/api/parties?' + new URLSearchParams(params), { headers })
       ]);
-      invoices = await invoicesRes.json();
-      const parties = await partiesRes.json();
+      const invoicesResponse = await invoicesRes.json();
+      const partiesResponse = await partiesRes.json();
+      invoices = invoicesResponse.data || [];
+      const parties = partiesResponse.data || [];
+      pagination.invoices.total = invoicesResponse.total || 0;
       
       let filtered = invoices.filter(i => i.type === currentInvoiceType);
       
@@ -3623,7 +3638,6 @@
         filtered = filtered.filter(i => i.party_id == invoiceFilters.party);
       }
       
-      pagination.invoices.total = filtered.length;
       const paged = paginate(filtered, pagination.invoices.page);
       const cols = getColumnConfig('invoices');
       
@@ -4039,12 +4053,15 @@
 
     async function loadTransactions() {
       if (!currentUser) return;
-      const res = await fetch(API + '/api/transactions', {
+      const params = { page: pagination.transactions.page, limit: 50 };
+      const res = await fetch(API + '/api/transactions?' + new URLSearchParams(params), {
         headers: { 'X-User-Id': currentUser.id, 'X-User-Role': currentUser.role }
       });
-      transactions = await res.json();
+      const response = await res.json();
+      transactions = response.data || [];
+      pagination.transactions.total = response.total || 0;
       
-      let filtered = transactions;
+      let filtered = [...transactions];
       if (transactionFilters.search) {
         filtered = filtered.filter(t => (t.party_name || '').toLowerCase().includes(transactionFilters.search.toLowerCase()));
       }
@@ -4055,7 +4072,6 @@
         filtered = filtered.filter(t => t.mode === transactionFilters.mode);
       }
       
-      pagination.transactions.total = filtered.length;
       const paged = paginate(filtered, pagination.transactions.page);
       const cols = getColumnConfig('transactions');
       
