@@ -14,10 +14,13 @@ mkdir -p logs backups
 # Install dependencies
 pip install -q -r requirements.txt
 
+# Use PORT from environment (Render sets this)
+PORT=${PORT:-5000}
+
 # Start with Gunicorn (4 workers)
 gunicorn \
     --workers 4 \
-    --bind 127.0.0.1:3000 \
+    --bind 0.0.0.0:$PORT \
     --timeout 120 \
     --access-logfile logs/access.log \
     --error-logfile logs/error.log \
