@@ -1,7 +1,7 @@
 import os
 import sqlite3
-import psycopg
-from psycopg import rows
+import psycopg2
+from psycopg2.extras import DictRow
 from flask import Flask, jsonify, request, send_from_directory, g, has_app_context
 from datetime import datetime, timedelta
 import random
@@ -50,7 +50,7 @@ def make_cursor(conn):
 def execute_query(cursor, *args, **kwargs):
     if not args:
         return cursor
-    
+
     # Handle both (cursor, sql, params) and (cursor, conn, sql, params)
     if isinstance(args[0], str):
         sql = args[0]
@@ -64,13 +64,15 @@ def execute_query(cursor, *args, **kwargs):
             sql = sql.replace("?", "%s")
         # SQLite to PostgreSQL syntax mappings
         sql = sql.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
-        sql = sql.replace("DATETIME DEFAULT CURRENT_TIMESTAMP", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+        sql = sql.replace(
+            "DATETIME DEFAULT CURRENT_TIMESTAMP", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+        )
         if "INSERT OR IGNORE" in sql:
             sql = sql.replace("INSERT OR IGNORE", "INSERT")
             if "VALUES" in sql:
                 sql += " ON CONFLICT DO NOTHING"
-        
-    cursor.execute(sql, params)
+
+    cursor.execute(sql, params if params is not None else [])
     return cursor
 
 
@@ -295,12 +297,16 @@ def init_db():
         ("quotations", "organisation_id"),
     ]:
         if IS_POSTGRES:
-            execute_query(c, "SELECT column_name FROM information_schema.columns WHERE table_name = ?", (table,))
+            execute_query(
+                c,
+                "SELECT column_name FROM information_schema.columns WHERE table_name = ?",
+                (table,),
+            )
             cols = [row["column_name"] for row in c.fetchall()]
         else:
             execute_query(c, f"PRAGMA table_info({table})")
             cols = [row[1] for row in c.fetchall()]
-        
+
         if col not in cols:
             execute_query(
                 c,
@@ -330,7 +336,10 @@ def init_db():
     )
 
     if IS_POSTGRES:
-        execute_query(c, "SELECT column_name FROM information_schema.columns WHERE table_name = 'parties'")
+        execute_query(
+            c,
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'parties'",
+        )
         columns = [row["column_name"] for row in c.fetchall()]
     else:
         execute_query(c, "PRAGMA table_info(parties)")
@@ -379,7 +388,10 @@ def init_db():
     )
 
     if IS_POSTGRES:
-        execute_query(c, "SELECT column_name FROM information_schema.columns WHERE table_name = 'invoices'")
+        execute_query(
+            c,
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'invoices'",
+        )
         columns = [row["column_name"] for row in c.fetchall()]
     else:
         execute_query(c, "PRAGMA table_info(invoices)")
@@ -454,12 +466,17 @@ def init_db():
     )
 
     if IS_POSTGRES:
-        execute_query(c, "INSERT INTO settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING")
+        execute_query(
+            c, "INSERT INTO settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING"
+        )
     else:
         execute_query(c, "INSERT OR IGNORE INTO settings (id) VALUES (1)")
 
     if IS_POSTGRES:
-        execute_query(c, "SELECT column_name FROM information_schema.columns WHERE table_name = 'settings'")
+        execute_query(
+            c,
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'settings'",
+        )
         columns = [row["column_name"] for row in c.fetchall()]
     else:
         execute_query(c, "PRAGMA table_info(settings)")
@@ -808,7 +825,6 @@ def chart_data():
                  FROM invoices
                  WHERE date >= ? AND date <= ?
                  GROUP BY month ORDER BY month""",
-
         (start_date, end_date),
     )
     monthly_data = [dict(row) for row in c.fetchall()]
