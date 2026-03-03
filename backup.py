@@ -1,5 +1,7 @@
 import os
 import sqlite3
+import psycopg
+from psycopg import rows
 import json
 import shutil
 from datetime import datetime
@@ -7,6 +9,8 @@ from logger import logger
 
 BACKUP_DIR = 'backups'
 MAX_BACKUPS = 10
+DATABASE_URL = os.environ.get("DATABASE_URL")
+IS_POSTGRES = bool(DATABASE_URL)
 
 def get_backup_dir():
     if not os.path.exists(BACKUP_DIR):
@@ -14,6 +18,37 @@ def get_backup_dir():
     return BACKUP_DIR
 
 def create_backup(db_path='proerp.db', backup_name=None):
+    if IS_POSTGRES:
+        # For PostgreSQL, we'll perform a JSON export as a "backup"
+        # In a real production environment, Render handles DB backups.
+        if backup_name is None:
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            backup_name = f"backup_{timestamp}"
+        
+        backup_file = os.path.join(get_backup_dir(), f"{backup_name}.json")
+        try:
+            data = export_json()
+            with open(backup_file, 'w') as f:
+                json.dump(data, f, indent=2)
+            
+            metadata = {
+                'backup_name': backup_name,
+                'created_at': datetime.now().isoformat(),
+                'type': 'postgresql_json',
+                'size_bytes': os.path.getsize(backup_file)
+            }
+            meta_file = os.path.join(get_backup_dir(), f"{backup_name}_meta.json")
+            with open(meta_file, 'w') as f:
+                json.dump(metadata, f, indent=2)
+            
+            cleanup_old_backups()
+            logger.info(f"PostgreSQL JSON backup created: {backup_name}")
+            return {'success': True, 'backup_name': backup_name, 'file': backup_file}
+        except Exception as e:
+            logger.error(f"PostgreSQL backup failed: {e}")
+            return {'success': False, 'error': str(e)}
+
+    # SQLite fallback
     if not os.path.exists(db_path):
         raise FileNotFoundError(f"Database file not found: {db_path}")
     
@@ -30,6 +65,7 @@ def create_backup(db_path='proerp.db', backup_name=None):
             'backup_name': backup_name,
             'created_at': datetime.now().isoformat(),
             'original_db': db_path,
+            'type': 'sqlite_db',
             'size_bytes': os.path.getsize(backup_file)
         }
         
@@ -46,6 +82,9 @@ def create_backup(db_path='proerp.db', backup_name=None):
         return {'success': False, 'error': str(e)}
 
 def restore_backup(backup_name, target_db='proerp.db'):
+    if IS_POSTGRES:
+        return {'success': False, 'error': 'Manual restore is not supported for PostgreSQL via this tool. Please use psql or Render dashboards.'}
+
     backup_file = os.path.join(get_backup_dir(), f"{backup_name}.db")
     
     if not os.path.exists(backup_file):
@@ -72,8 +111,11 @@ def list_backups():
     backups = []
     
     for f in sorted(os.listdir(backup_dir), reverse=True):
-        if f.endswith('.db'):
-            backup_name = f[:-3]
+        if f.endswith('.db') or f.endswith('.json'):
+            if f.endswith('_meta.json'): continue
+            
+            ext = '.db' if f.endswith('.db') else '.json'
+            backup_name = f[:-len(ext)]
             meta_file = os.path.join(backup_dir, f"{backup_name}_meta.json")
             
             if os.path.exists(meta_file):
@@ -95,7 +137,8 @@ def cleanup_old_backups():
     backups = list_backups()
     if len(backups) > MAX_BACKUPS:
         for backup in backups[MAX_BACKUPS:]:
-            backup_file = os.path.join(get_backup_dir(), f"{backup['backup_name']}.db")
+            ext = '.db' if backup.get('type') == 'sqlite_db' else '.json'
+            backup_file = os.path.join(get_backup_dir(), f"{backup['backup_name']}{ext}")
             meta_file = os.path.join(get_backup_dir(), f"{backup['backup_name']}_meta.json")
             
             if os.path.exists(backup_file):
@@ -106,26 +149,31 @@ def cleanup_old_backups():
             logger.info(f"Old backup cleaned up: {backup['backup_name']}")
 
 def delete_backup(backup_name):
-    backup_file = os.path.join(get_backup_dir(), f"{backup_name}.db")
-    meta_file = os.path.join(get_backup_dir(), f"{backup_name}_meta.json")
-    
-    try:
+    # Try both extensions
+    for ext in ['.db', '.json']:
+        backup_file = os.path.join(get_backup_dir(), f"{backup_name}{ext}")
         if os.path.exists(backup_file):
-            os.remove(backup_file)
-        if os.path.exists(meta_file):
-            os.remove(meta_file)
-        
-        logger.info(f"Backup deleted: {backup_name}")
-        return {'success': True}
-    except Exception as e:
-        return {'success': False, 'error': str(e)}
+            meta_file = os.path.join(get_backup_dir(), f"{backup_name}_meta.json")
+            try:
+                os.remove(backup_file)
+                if os.path.exists(meta_file):
+                    os.remove(meta_file)
+                logger.info(f"Backup deleted: {backup_name}")
+                return {'success': True}
+            except Exception as e:
+                return {'success': False, 'error': str(e)}
+    
+    return {'success': False, 'error': 'Backup not found'}
 
 def export_json(db_path='proerp.db'):
-    if not os.path.exists(db_path):
-        return {'success': False, 'error': 'Database not found'}
+    if IS_POSTGRES:
+        conn = psycopg.connect(DATABASE_URL, row_factory=rows.dict_row)
+    else:
+        if not os.path.exists(db_path):
+            return {'success': False, 'error': 'Database not found'}
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
     
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
     c = conn.cursor()
     
     def get_all(table):

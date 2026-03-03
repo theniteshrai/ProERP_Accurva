@@ -47,11 +47,48 @@ def make_cursor(conn):
     return conn.cursor()
 
 
-def execute_query(cursor, sql, params=None):
-    if IS_POSTGRES and params:
-        sql = sql.replace("?", "%s")
+def execute_query(cursor, *args, **kwargs):
+    if not args:
+        return cursor
+    
+    # Handle both (cursor, sql, params) and (cursor, conn, sql, params)
+    if isinstance(args[0], str):
+        sql = args[0]
+        params = args[1] if len(args) > 1 else kwargs.get("params")
+    else:
+        sql = args[1]
+        params = args[2] if len(args) > 2 else kwargs.get("params")
+
+    if IS_POSTGRES:
+        if params:
+            sql = sql.replace("?", "%s")
+        # SQLite to PostgreSQL syntax mappings
+        sql = sql.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
+        sql = sql.replace("DATETIME DEFAULT CURRENT_TIMESTAMP", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+        if "INSERT OR IGNORE" in sql:
+            sql = sql.replace("INSERT OR IGNORE", "INSERT")
+            if "VALUES" in sql:
+                sql += " ON CONFLICT DO NOTHING"
+        
     cursor.execute(sql, params)
     return cursor
+
+
+def get_scalar(cursor, *args, **kwargs):
+    execute_query(cursor, *args, **kwargs)
+    row = cursor.fetchone()
+    if not row:
+        return None
+    try:
+        # SQLite Row supports index-based access
+        return row[0]
+    except (TypeError, KeyError, IndexError):
+        # PostgreSQL dict_row or other non-indexable object
+        if hasattr(row, "values") and callable(row.values):
+            return list(row.values())[0]
+        elif isinstance(row, dict):
+            return list(row.values())[0]
+        return row
 
 
 def get_db():
@@ -199,7 +236,8 @@ def init_db():
     conn = get_db()
     c = make_cursor(conn)
 
-    execute_query(c, "PRAGMA journal_mode=WAL")
+    if not IS_POSTGRES:
+        execute_query(c, "PRAGMA journal_mode=WAL")
 
     execute_query(
         c,
@@ -241,7 +279,10 @@ def init_db():
 
     execute_query(c, "SELECT id FROM organisations LIMIT 1")
     first_org = c.fetchone()
-    org_id = first_org[0] if first_org else 1
+    try:
+        org_id = first_org["id"] if first_org else 1
+    except (TypeError, KeyError, IndexError):
+        org_id = first_org[0] if first_org else 1
 
     for table, col in [
         ("users", "organisation_id"),
@@ -253,8 +294,13 @@ def init_db():
         ("purchase_orders", "organisation_id"),
         ("quotations", "organisation_id"),
     ]:
-        execute_query(c, f"PRAGMA table_info({table})")
-        cols = [row[1] for row in c.fetchall()]
+        if IS_POSTGRES:
+            execute_query(c, "SELECT column_name FROM information_schema.columns WHERE table_name = ?", (table,))
+            cols = [row["column_name"] for row in c.fetchall()]
+        else:
+            execute_query(c, f"PRAGMA table_info({table})")
+            cols = [row[1] for row in c.fetchall()]
+        
         if col not in cols:
             execute_query(
                 c,
@@ -283,8 +329,13 @@ def init_db():
     )""",
     )
 
-    execute_query(c, "PRAGMA table_info(parties)")
-    columns = [row[1] for row in c.fetchall()]
+    if IS_POSTGRES:
+        execute_query(c, "SELECT column_name FROM information_schema.columns WHERE table_name = 'parties'")
+        columns = [row["column_name"] for row in c.fetchall()]
+    else:
+        execute_query(c, "PRAGMA table_info(parties)")
+        columns = [row[1] for row in c.fetchall()]
+
     for col, default in [("city", None), ("pan", None), ("place_of_supply", None)]:
         if col not in columns:
             execute_query(c, f"ALTER TABLE parties ADD COLUMN {col} TEXT")
@@ -327,8 +378,13 @@ def init_db():
     )""",
     )
 
-    execute_query(c, "PRAGMA table_info(invoices)")
-    columns = [row[1] for row in c.fetchall()]
+    if IS_POSTGRES:
+        execute_query(c, "SELECT column_name FROM information_schema.columns WHERE table_name = 'invoices'")
+        columns = [row["column_name"] for row in c.fetchall()]
+    else:
+        execute_query(c, "PRAGMA table_info(invoices)")
+        columns = [row[1] for row in c.fetchall()]
+
     if "status" not in columns:
         execute_query(
             c, "ALTER TABLE invoices ADD COLUMN status TEXT DEFAULT 'pending'"
@@ -397,10 +453,17 @@ def init_db():
     )""",
     )
 
-    execute_query(c, "INSERT OR IGNORE INTO settings (id) VALUES (1)")
+    if IS_POSTGRES:
+        execute_query(c, "INSERT INTO settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING")
+    else:
+        execute_query(c, "INSERT OR IGNORE INTO settings (id) VALUES (1)")
 
-    execute_query(c, "PRAGMA table_info(settings)")
-    columns = [row[1] for row in c.fetchall()]
+    if IS_POSTGRES:
+        execute_query(c, "SELECT column_name FROM information_schema.columns WHERE table_name = 'settings'")
+        columns = [row["column_name"] for row in c.fetchall()]
+    else:
+        execute_query(c, "PRAGMA table_info(settings)")
+        columns = [row[1] for row in c.fetchall()]
     for col in [
         "company_pan",
         "bank_name",
@@ -739,12 +802,13 @@ def chart_data():
     execute_query(
         c,
         conn,
-        """SELECT strftime('%Y-%m', date) as month, 
+        """SELECT substr(date, 1, 7) as month,
                  SUM(CASE WHEN type = 'sale' THEN total ELSE 0 END) as sales,
                  SUM(CASE WHEN type = 'purchase' THEN total ELSE 0 END) as purchases
-                 FROM invoices 
+                 FROM invoices
                  WHERE date >= ? AND date <= ?
                  GROUP BY month ORDER BY month""",
+
         (start_date, end_date),
     )
     monthly_data = [dict(row) for row in c.fetchall()]
@@ -807,8 +871,7 @@ def get_parties():
         where_clause += " AND name LIKE ?"
         params.append(f"%{search}%")
 
-    execute_query(c, f"SELECT COUNT(*) FROM parties {where_clause}", params)
-    total = c.fetchone()[0]
+    total = get_scalar(c, f"SELECT COUNT(*) FROM parties {where_clause}", params)
 
     query = f"SELECT * FROM parties {where_clause} ORDER BY name LIMIT ? OFFSET ?"
     execute_query(c, query, params + [limit, (page - 1) * limit])
@@ -993,8 +1056,7 @@ def get_items():
         where_clause += " AND name LIKE ?"
         params.append(f"%{search}%")
 
-    execute_query(c, f"SELECT COUNT(*) FROM items {where_clause}", params)
-    total = c.fetchone()[0]
+    total = get_scalar(c, f"SELECT COUNT(*) FROM items {where_clause}", params)
 
     query = f"SELECT * FROM items {where_clause} ORDER BY name LIMIT ? OFFSET ?"
     execute_query(c, query, params + [limit, (page - 1) * limit])
@@ -1138,8 +1200,7 @@ def get_invoices():
         where_clause += " AND i.type = ?"
         params.append(inv_type)
 
-    execute_query(c, f"SELECT COUNT(*) FROM invoices i {where_clause}", params)
-    total = c.fetchone()[0]
+    total = get_scalar(c, f"SELECT COUNT(*) FROM invoices i {where_clause}", params)
 
     execute_query(
         c,
@@ -1627,45 +1688,40 @@ def day_book_report():
     )
     entries = [dict(row) for row in c.fetchall()]
 
-    execute_query(
+    sales = get_scalar(
         c,
         conn,
         """SELECT COALESCE(SUM(total), 0) as total FROM invoices WHERE type = 'sale' AND date BETWEEN ? AND ?""",
         (from_date, to_date),
     )
-    sales = c.fetchone()[0]
 
-    execute_query(
+    purchases = get_scalar(
         c,
         conn,
         """SELECT COALESCE(SUM(total), 0) as total FROM invoices WHERE type = 'purchase' AND date BETWEEN ? AND ?""",
         (from_date, to_date),
     )
-    purchases = c.fetchone()[0]
 
-    execute_query(
+    receipts = get_scalar(
         c,
         conn,
         """SELECT COALESCE(SUM(amount), 0) as total FROM transactions WHERE type = 'receipt' AND date BETWEEN ? AND ?""",
         (from_date, to_date),
     )
-    receipts = c.fetchone()[0]
 
-    execute_query(
+    payments = get_scalar(
         c,
         conn,
         """SELECT COALESCE(SUM(amount), 0) as total FROM transactions WHERE type = 'payment' AND date BETWEEN ? AND ?""",
         (from_date, to_date),
     )
-    payments = c.fetchone()[0]
 
-    execute_query(
+    expenses = get_scalar(
         c,
         conn,
         """SELECT COALESCE(SUM(amount), 0) as total FROM expenses WHERE date BETWEEN ? AND ?""",
         (from_date, to_date),
     )
-    expenses = c.fetchone()[0]
 
     return jsonify(
         {
